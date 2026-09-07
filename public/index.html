@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <meta name="theme-color" content="#f5f5f7" />
+  <title>File Bridge</title>
+  <link rel="stylesheet" href="/style.css?v=5" />
+</head>
+<body>
+  <main class="app-shell">
+    <section id="pairView" class="pair-card">
+      <div class="brand">
+        <div class="brand-icon">↔</div>
+        <div>
+          <h1>File Bridge</h1>
+          <p>跨设备传文字和小文件</p>
+        </div>
+      </div>
+
+      <section class="nearby-section" aria-labelledby="nearbyTitle">
+        <h2 id="nearbyTitle">同网络在线设备</h2>
+        <p id="localDevice" class="tip"></p>
+        <div id="nearbyDevices" class="nearby-devices" aria-live="polite">正在发现设备…</div>
+        <p class="tip">双方登录并停留在此页，点击设备即可免码连接。相同出口网络可能包含其他用户，请核对设备名称。</p>
+      </section>
+      <div class="divider"><span>使用配对码连接</span></div>
+
+      <button id="createBtn" class="primary-btn">生成 4 位配对码</button>
+
+      <div class="divider"><span>或</span></div>
+
+      <form id="joinForm" class="join-form">
+        <input id="codeInput" inputmode="numeric" pattern="[0-9]*" maxlength="4" placeholder="输入 4 位配对码" autocomplete="one-time-code" />
+        <button class="secondary-btn" type="submit">加入</button>
+      </form>
+
+      <p id="pairTip" class="tip">两台设备打开此网页，一台生成配对码，另一台输入即可。</p>
+      <button id="logoutBtn" class="logout-btn" type="button">退出登录</button>
+    </section>
+
+    <section id="chatView" class="chat-card hidden">
+      <header class="chat-header">
+        <div class="room-block">
+          <div class="room-label">配对码</div>
+          <div id="roomCode" class="room-code">----</div>
+        </div>
+        <div class="header-actions">
+          <span id="peerBadge" class="badge waiting">等待另一台设备</span>
+          <button id="leaveBtn" class="text-btn" type="button" aria-label="退出当前会话" title="退出当前会话">退出</button>
+          <button id="lockBtn" class="text-btn" type="button" aria-label="锁定并退出登录" title="锁定并退出登录">锁定</button>
+        </div>
+      </header>
+
+      <div id="messages" class="messages">
+        <div class="system-message">配对成功后即可传输内容</div>
+      </div>
+
+      <footer class="composer">
+        <div id="filePreview" class="file-preview hidden"></div>
+        <div class="composer-row">
+          <label class="file-btn" title="选择文件">
+            <input id="fileInput" type="file" />
+            <span>＋</span>
+          </label>
+          <textarea id="textInput" rows="1" maxlength="10000" placeholder="输入文字…" enterkeyhint="send"></textarea>
+          <button id="sendBtn" class="send-btn">发送</button>
+        </div>
+        <div id="transferRoute" class="status-text" aria-live="polite"></div>
+        <div id="receiveProgress" class="status-text"></div>
+        <div id="statusText" class="status-text"></div>
+      </footer>
+    </section>
+  </main>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script src="/transfer.js?v=2"></script>
+  <script src="/app.js?v=5"></script>
+</body>
+</html>

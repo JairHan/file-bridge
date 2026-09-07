@@ -1,0 +1,393 @@
+<!doctype html>
+<html lang="zh-CN">
+
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <meta name="theme-color" content="#f5f5f7" />
+  <title>登录 · File Bridge</title>
+  <style>
+    :root {
+      font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif;
+      color: #1d1d1f;
+      background: #f5f5f7;
+      font-synthesis: none;
+      -webkit-text-size-adjust: 100%;
+      --safe-top: env(safe-area-inset-top, 0px);
+      --safe-right: env(safe-area-inset-right, 0px);
+      --safe-bottom: env(safe-area-inset-bottom, 0px);
+      --safe-left: env(safe-area-inset-left, 0px);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html,
+    body {
+      margin: 0;
+      width: 100%;
+      min-height: 100%;
+    }
+
+    body {
+      min-height: 100dvh;
+      background: linear-gradient(180deg, #fbfbfd 0%, #f1f2f5 100%);
+      overscroll-behavior: none;
+    }
+
+    button,
+    input {
+      font: inherit;
+    }
+
+    button {
+      cursor: pointer;
+      touch-action: manipulation;
+      -webkit-tap-highlight-color: transparent;
+    }
+
+    input {
+      -webkit-appearance: none;
+      appearance: none;
+    }
+
+    .shell {
+      width: min(430px, calc(100% - 28px));
+      min-height: 100dvh;
+      margin: 0 auto;
+      display: grid;
+      place-items: center;
+      padding: max(28px, calc(var(--safe-top) + 18px)) var(--safe-right) max(28px, calc(var(--safe-bottom) + 18px)) var(--safe-left);
+    }
+
+    .card {
+      width: 100%;
+      padding: 34px;
+      background: rgba(255, 255, 255, .9);
+      -webkit-backdrop-filter: blur(24px);
+      backdrop-filter: blur(24px);
+      border: 1px solid rgba(0, 0, 0, .06);
+      box-shadow: 0 18px 60px rgba(0, 0, 0, .08);
+      border-radius: 28px;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      margin-bottom: 30px;
+    }
+
+    .brand-icon {
+      width: 54px;
+      height: 54px;
+      flex: 0 0 auto;
+      display: grid;
+      place-items: center;
+      border-radius: 16px;
+      background: #07c160;
+      color: white;
+      font-size: 29px;
+      font-weight: 700;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: 27px;
+      letter-spacing: -.5px;
+    }
+
+    .brand p {
+      margin: 5px 0 0;
+      color: #777;
+    }
+
+    label {
+      display: block;
+      margin-bottom: 8px;
+      color: #555;
+      font-size: 13px;
+      font-weight: 600;
+    }
+
+    input {
+      width: 100%;
+      height: 52px;
+      border: 1px solid #ddd;
+      background: #fafafa;
+      border-radius: 14px;
+      padding: 0 16px;
+      outline: none;
+      font-size: 16px;
+    }
+
+    input:focus {
+      border-color: #07c160;
+      box-shadow: 0 0 0 3px rgba(7, 193, 96, .12);
+    }
+
+    button {
+      width: 100%;
+      min-height: 52px;
+      margin-top: 14px;
+      border: 0;
+      border-radius: 14px;
+      background: #07c160;
+      color: #fff;
+      font-weight: 650;
+    }
+
+    button:hover {
+      background: #06ad56;
+    }
+
+    button:active {
+      transform: scale(.985);
+    }
+
+    button:disabled {
+      opacity: .55;
+      cursor: default;
+    }
+
+    .captcha-row {
+      display: flex;
+      gap: 10px;
+      align-items: center;
+    }
+
+    .captcha-row input {
+      flex: 1;
+      min-width: 0;
+      padding: 0 12px;
+    }
+
+    #refreshCaptcha {
+      flex: 0 0 116px;
+      width: 116px;
+      height: 52px;
+      min-height: 52px;
+      margin: 0;
+      padding: 0;
+      overflow: hidden;
+      background: #edf4ef;
+      border: 1px solid #d9e4dc;
+      border-radius: 12px;
+    }
+
+    #captchaImage {
+      display: block;
+      width: 100%;
+      height: 100%;
+      object-fit: contain;
+    }
+
+    .message {
+      min-height: 20px;
+      margin: 12px 0 0;
+      text-align: center;
+      font-size: 13px;
+      color: #d70015;
+    }
+
+    .tip {
+      margin: 18px 0 0;
+      color: #8a8a8f;
+      font-size: 12px;
+      line-height: 1.55;
+      text-align: center;
+    }
+
+    @media (max-width: 520px) {
+      body {
+        background: #f7f7f8;
+      }
+
+      .shell {
+        width: 100%;
+        min-height: 100dvh;
+        display: flex;
+        align-items: flex-start;
+        padding: max(14vh, calc(var(--safe-top) + 28px)) calc(12px + var(--safe-right)) calc(20px + var(--safe-bottom)) calc(12px + var(--safe-left));
+      }
+
+      .card {
+        padding: 28px 22px 24px;
+        border-radius: 24px;
+      }
+
+      .brand {
+        margin-bottom: 26px;
+      }
+
+      .brand-icon {
+        width: 50px;
+        height: 50px;
+        border-radius: 15px;
+        font-size: 27px;
+      }
+
+      h1 {
+        font-size: 25px;
+      }
+
+      .brand p {
+        font-size: 14px;
+      }
+
+      input,
+      button {
+        min-height: 54px;
+      }
+    }
+
+    @media (max-width: 360px) {
+      .shell {
+        padding-left: calc(10px + var(--safe-left));
+        padding-right: calc(10px + var(--safe-right));
+      }
+
+      .card {
+        padding: 24px 18px 20px;
+      }
+    }
+
+    @media (max-width: 900px) and (orientation: landscape) and (max-height: 520px) {
+      .shell {
+        align-items: flex-start;
+        padding-top: max(14px, calc(var(--safe-top) + 8px));
+        padding-bottom: max(14px, calc(var(--safe-bottom) + 8px));
+      }
+
+      .card {
+        max-width: 430px;
+        margin: 0 auto;
+        padding-top: 22px;
+        padding-bottom: 18px;
+      }
+
+      .brand {
+        margin-bottom: 18px;
+      }
+
+      .tip {
+        margin-top: 12px;
+      }
+    }
+  </style>
+</head>
+
+<body>
+  <main class="shell">
+    <section class="card">
+      <div class="brand">
+        <div class="brand-icon">↔</div>
+        <div>
+          <h1>File Bridge</h1>
+          <p>请输入右侧图片中的数字</p>
+        </div>
+      </div>
+
+      <form id="loginForm">
+        <label for="password">验证码</label>
+        <div class="captcha-row">
+          <input id="password" type="text" maxlength="4" minlength="4" pattern="[0-9]{4}" inputmode="numeric" required
+            autocomplete="one-time-code" autocapitalize="none" spellcheck="false" enterkeyhint="go"
+            placeholder="输入 4 位数字" />
+          <button id="refreshCaptcha" type="button" title="看不清？点击换一张" aria-label="刷新图片验证码"><img id="captchaImage"
+              alt="四位数字图片验证码" /></button>
+        </div>
+        <button id="submitBtn" type="submit">进入</button>
+      </form>
+      <div id="message" class="message" role="status"></div>
+      <p class="tip">连续输错 3 次，该 IP 将锁定 1 小时。</p>
+    </section>
+  </main>
+
+  <script>
+    const form = document.getElementById('loginForm');
+    const password = document.getElementById('password');
+    const submitBtn = document.getElementById('submitBtn');
+    const message = document.getElementById('message');
+
+    const refreshBtn = document.getElementById('refreshCaptcha');
+    const captchaImage = document.getElementById('captchaImage');
+    let imageUrl = null;
+    let loading = false;
+    let submitting = false;
+    let ready = false;
+    let lockedUntil = 0;
+    async function refreshCaptcha() {
+      if (loading || lockedUntil > Date.now()) return;
+      loading = true;
+      ready = false;
+      updateLock();
+      try {
+        const response = await fetch('/api/captcha', { cache: 'no-store', credentials: 'same-origin' });
+        if (!response.ok) {
+          const data = await response.json();
+          if (response.status === 429) lockedUntil = Date.now() + data.retryAfter * 1000;
+          throw new Error(data.error || '验证码加载失败，请点击图片重试');
+        }
+        const blob = await response.blob();
+        if (imageUrl) URL.revokeObjectURL(imageUrl);
+        imageUrl = URL.createObjectURL(blob);
+        captchaImage.src = imageUrl;
+        password.value = '';
+        ready = true;
+      } catch (error) { message.textContent = error.message; }
+      finally { loading = false; updateLock(); }
+    }
+    refreshBtn.addEventListener('click', refreshCaptcha);
+    function updateLock() {
+      const seconds = Math.max(0, Math.ceil((lockedUntil - Date.now()) / 1000));
+      if (!seconds) lockedUntil = 0;
+      password.disabled = seconds > 0;
+      submitBtn.disabled = seconds > 0 || loading || submitting || !ready;
+      refreshBtn.disabled = seconds > 0 || loading || submitting;
+      submitBtn.textContent = seconds ? `已锁定 ${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}` : submitting ? '验证中…' : '进入';
+    }
+    password.addEventListener('input', () => { password.value = password.value.replace(/\D/g, '').slice(0, 4); });
+    setInterval(() => { if (lockedUntil) { updateLock(); if (!lockedUntil) refreshCaptcha(); } }, 1000);
+    refreshCaptcha();
+
+    form.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      if (!ready || submitting || lockedUntil > Date.now() || !password.value) return;
+      submitting = true;
+      updateLock();
+
+      submitBtn.disabled = true;
+      submitBtn.textContent = '验证中…';
+      message.textContent = '';
+
+      try {
+        const response = await fetch('/api/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'same-origin',
+          body: JSON.stringify({ password: password.value })
+        });
+        const data = await response.json().catch(() => ({}));
+
+        if (!response.ok || !data.ok) {
+          message.textContent = data.error || '登录失败，请重试';
+          if (response.status === 429) lockedUntil = Date.now() + Number(data.retryAfter || 3600) * 1000;
+          if (!lockedUntil) await refreshCaptcha();
+          password.select();
+          return;
+        }
+
+        location.replace('/');
+      } catch {
+        message.textContent = '无法连接服务器，请稍后重试';
+      } finally {
+        submitting = false;
+        updateLock();
+      }
+    });
+  </script>
+</body>
+
+</html>

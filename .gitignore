@@ -1,0 +1,40 @@
+# Dependencies and generated output
+node_modules/
+coverage/
+dist/
+*.tsbuildinfo
+
+# Local settings and secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Persistent login state (retain on the deployment host)
+.data/
+
+# Logs and temporary files
+*.log
+npm-debug.log*
+*.tmp
+*.swp
+*.swo
+
+# OS, editor and local agent files
+.DS_Store
+._*
+Thumbs.db
+.idea/
+.vscode/
+.codex/
+
+# Host-specific deployment and ACME validation artifacts
+.htaccess
+.well-known/acme-challenge/
+
+# Browser test artifacts
+playwright-report/
+test-results/
