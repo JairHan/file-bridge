@@ -13,6 +13,7 @@ class FileTransport {
   }
   close() {
     clearTimeout(this.receiveTimer);
+    this.receiveTimer = null;
     this.pc?.close();
     this.pc = null;
     this.dc = null;
@@ -62,6 +63,7 @@ class FileTransport {
   attach(dc) {
     this.dc = dc;
     dc.binaryType = 'arraybuffer';
+    dc.bufferedAmountLowThreshold = 256 * 1024;
     dc.onopen = () => this.hooks.route('设备直传 · 不经过服务器');
     dc.onclose = () => { if (this.dc === dc) this.close(); };
     dc.onmessage = ({ data }) => {
@@ -76,11 +78,20 @@ class FileTransport {
     };
   }
   receive(packet) {
-    clearTimeout(this.receiveTimer);
-    this.receiveTimer = setTimeout(() => {
-      if (this.incoming) this.hooks.receiveProgress(this.incoming, true);
-      this.incoming = null;
-    }, 45000);
+    // Avoid allocating/clearing a timer for every binary frame.
+    this.lastReceivedAt = performance.now();
+    if (!this.receiveTimer) {
+      const checkIdle = () => {
+        if (this.incoming && performance.now() - this.lastReceivedAt < 45000) {
+          this.receiveTimer = setTimeout(checkIdle, 5000);
+        } else {
+          if (this.incoming) this.hooks.receiveProgress(this.incoming, true);
+          this.incoming = null;
+          this.receiveTimer = null;
+        }
+      };
+      this.receiveTimer = setTimeout(checkIdle, 5000);
+    }
     if (packet.kind === 'begin') {
       if (this.incoming) throw new Error('接收端正在接收另一个文件');
       if (!Number.isSafeInteger(packet.size) || packet.size < 1 || packet.size > this.limit) throw new Error('文件大小超出接收限制');
@@ -100,7 +111,11 @@ class FileTransport {
       if (!(data instanceof ArrayBuffer) || data.byteLength > 256 * 1024 || file.bytes + data.byteLength > file.size) throw new Error('文件分块无效');
       file.parts.push(data);
       file.bytes += data.byteLength;
-      this.hooks.receiveProgress(file);
+      const now = performance.now();
+      if (!file.lastProgressAt || now - file.lastProgressAt >= 200 || file.bytes === file.size) {
+        file.lastProgressAt = now;
+        this.hooks.receiveProgress(file);
+      }
     }
     if (packet.kind === 'end') {
       if (file.bytes !== file.size) throw new Error('文件不完整');
@@ -128,8 +143,69 @@ class FileTransport {
     if (!result || result.error) throw new Error(result?.error || '传输失败');
     return result;
   }
+  async waitForBuffer(dc, signal) {
+    if (signal.aborted) throw new Error('已取消传输');
+    if (dc.readyState !== 'open') throw new Error('直传连接已断开');
+    if (dc.bufferedAmount <= 1024 * 1024) return;
+    await new Promise((resolve, reject) => {
+      const finish = error => {
+        clearTimeout(timer);
+        dc.removeEventListener('bufferedamountlow', drained);
+        dc.removeEventListener('close', closed);
+        dc.removeEventListener('error', closed);
+        signal.removeEventListener('abort', aborted);
+        error ? reject(error) : resolve();
+      };
+      const drained = () => finish();
+      const closed = () => finish(new Error('直传连接已断开'));
+      const aborted = () => finish(new Error('已取消传输'));
+      const timer = setTimeout(() => finish(new Error('发送缓冲区超时，请重试')), 30000);
+      dc.addEventListener('bufferedamountlow', drained, { once: true });
+      dc.addEventListener('close', closed, { once: true });
+      dc.addEventListener('error', closed, { once: true });
+      signal.addEventListener('abort', aborted, { once: true });
+      if (signal.aborted) aborted();
+      else if (dc.readyState !== 'open') closed();
+      else if (dc.bufferedAmount <= dc.bufferedAmountLowThreshold) drained();
+    });
+  }
+  async sendDirect(file, report, signal) {
+    const dc = this.dc;
+    const blockSize = 64 * 1024;
+    const maximum = this.pc?.sctp?.maxMessageSize;
+    const frameSize = Math.min(16 * 1024, maximum > 0 ? maximum : 16 * 1024);
+    const confirmations = [];
+    let failure;
+    // At most two read blocks, bounded SCTP buffering and four unconfirmed 64 KiB blocks.
+    const read = offset => file.slice(offset, offset + blockSize).arrayBuffer()
+      .then(data => ({ data }), error => ({ error }));
+    let nextRead = read(0);
+    {
+      for (let offset = 0; offset < file.size; offset += blockSize) {
+        if (signal.aborted) throw new Error('已取消传输');
+        if (failure) throw failure;
+        const result = await nextRead;
+        if (result.error) throw result.error;
+        const data = result.data;
+        nextRead = offset + blockSize < file.size ? read(offset + blockSize) : null;
+        for (let pos = 0; pos < data.byteLength; pos += frameSize) {
+          if (signal.aborted) throw new Error('已取消传输');
+          if (dc.readyState !== 'open' || dc.bufferedAmount > 1024 * 1024) await this.waitForBuffer(dc, signal);
+          if (failure) throw failure;
+          // Keep frames small for browser SCTP interoperability.
+          dc.send(data.slice(pos, pos + frameSize));
+        }
+        // Pipeline receiver confirmations instead of stopping after every block.
+        confirmations.push(this.request({ kind: 'block' }, true)
+          .then(result => report(result.bytes), error => { failure = error; }));
+        if (confirmations.length >= 4) await confirmations.shift();
+      }
+      await Promise.all(confirmations);
+      if (failure) throw failure;
+      if (signal.aborted) throw new Error('已取消传输');
+    }
+  }
   async send(file, progress, signal) {
-    // Give an in-progress LAN handshake a chance before choosing the relay path.
     while (this.pc && this.dc?.readyState !== 'open') {
       if (signal.aborted) throw new Error('已取消传输');
       await new Promise(resolve => setTimeout(resolve, 100));
@@ -137,30 +213,41 @@ class FileTransport {
     const direct = this.dc?.readyState === 'open';
     const route = direct ? '设备直传' : '服务器转发';
     const started = performance.now();
+    let lastProgress = started;
+    let acknowledged = 0;
+    let reporting = true;
+    const report = bytes => {
+      if (!reporting) return;
+      acknowledged = Math.max(acknowledged, bytes);
+      const now = performance.now();
+      if (now - lastProgress >= 200 || acknowledged === file.size) {
+        lastProgress = now;
+        progress(acknowledged, started, route);
+      }
+    };
     progress(0, started, route);
     let begun = false;
     try {
+      if (signal.aborted) throw new Error('已取消传输');
       await this.request({ kind: 'begin', name: file.name, type: file.type, size: file.size }, direct);
       begun = true;
-      const blockSize = direct ? 1024 * 1024 : 256 * 1024;
-      for (let offset = 0; offset < file.size; offset += blockSize) {
-        if (signal.aborted) throw new Error('已取消传输');
-        const data = await file.slice(offset, offset + blockSize).arrayBuffer();
-        if (signal.aborted) throw new Error('已取消传输');
-        let result;
-        if (direct) {
-          // At most one 1 MiB block is queued; 16 KiB frames fit browser SCTP limits.
-          for (let pos = 0; pos < data.byteLength; pos += 16384) this.dc.send(data.slice(pos, pos + 16384));
-          result = await this.request({ kind: 'block' }, true);
-        } else result = await this.request({ kind: 'data', data }, false);
-        progress(result.bytes, started, route);
+      if (direct) await this.sendDirect(file, report, signal);
+      else {
+        for (let offset = 0; offset < file.size; offset += 256 * 1024) {
+          if (signal.aborted) throw new Error('已取消传输');
+          const data = await file.slice(offset, offset + 256 * 1024).arrayBuffer();
+          if (signal.aborted) throw new Error('已取消传输');
+          const result = await this.request({ kind: 'data', data }, false);
+          report(result.bytes);
+        }
       }
       if (signal.aborted) throw new Error('已取消传输');
       await this.request({ kind: 'end' }, direct);
+      report(file.size);
     } catch (e) {
       if (begun) this.request({ kind: 'cancel' }, direct).catch(() => {});
       throw e;
-    }
+    } finally { reporting = false;  }
   }
 }
 window.FileTransport = FileTransport;
