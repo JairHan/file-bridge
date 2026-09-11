@@ -94,30 +94,6 @@ ROOM_TTL_MS=1800000 SESSION_TTL_MS=86400000 npm start
 - 服务端登录有效期按最后校验时间计算，浏览器 Cookie 的有效期则从登录时固定计时，不自动续期。
 - 服务重启会清除登录会话、配对和图片验证码，但保留磁盘中的登录锁定记录。
 
-## 部署到宝塔 / Nginx
-
-1. 上传源码及 `package-lock.json`，执行 `npm ci --omit=dev`。
-2. 添加 Node 项目，启动命令为 `npm start`，端口为 `5000`，配置需要的环境变量。
-3. 配置域名反向代理和 HTTPS。公网仅开放代理端口，Node 端口限制为可信来源访问。
-4. 确保 Node 进程可写 `AUTH_STATE_DIR`，更新部署时保留该目录。
-
-同机 Nginx 配置示例：
-
-```nginx
-location / {
-    proxy_pass http://127.0.0.1:5000;
-    proxy_http_version 1.1;
-    proxy_set_header Upgrade $http_upgrade;
-    proxy_set_header Connection "upgrade";
-    proxy_set_header Host $host;
-    proxy_set_header X-Real-IP $remote_addr;
-    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-    proxy_set_header X-Forwarded-Proto $scheme;
-    proxy_read_timeout 3600s;
-    proxy_send_timeout 3600s;
-    client_max_body_size 25m;
-}
-```
 
 代理位于其他主机或容器时，将 `TRUST_PROXY` 设置为实际代理地址，且由代理正确设置客户端地址头，不要信任任意来源。这影响设备发现和按 IP 锁定的准确性。
 
