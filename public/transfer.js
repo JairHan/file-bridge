@@ -13,6 +13,8 @@ class FileTransport {
     this.limit = 1024 ** 3;
     // Server-relayed limit, supplied by the server and lower by default.
     this.relayLimit = 1024 ** 3;
+    // ICE configuration supplied by the server (STUN/TURN).
+    this.iceServers = [];
     socket.on('rtc-start', ({ initiator }) => this.start(initiator));
     socket.on('rtc-signal', data => this.signal(data).catch(() => this.close()));
     socket.on('file-packet', (packet, ack) => {
@@ -23,9 +25,14 @@ class FileTransport {
     if (Number.isSafeInteger(direct) && direct > 0) this.limit = direct;
     if (Number.isSafeInteger(relay) && relay > 0) this.relayLimit = relay;
   }
-  close() {
+  setIceServers(servers) {
+    if (Array.isArray(servers)) this.iceServers = servers;
+  }
+  close(reason = '服务器转发') {
     clearTimeout(this.receiveTimer);
     this.receiveTimer = null;
+    clearTimeout(this.iceTimer);
+    this.iceTimer = null;
     this.pc?.close();
     this.pc = null;
     this.dc = null;
@@ -33,22 +40,39 @@ class FileTransport {
     this.pending.clear();
     if (this.incoming) this.hooks.receiveProgress(this.incoming, true);
     this.incoming = null;
-    this.hooks.route('服务器转发');
+    this.hooks.route(reason);
   }
   async start(initiator) {
     this.close();
     if (!window.RTCPeerConnection) return;
     this.hooks.route('正在建立直传…');
-    const pc = this.pc = new RTCPeerConnection({ iceServers: [] });
+    const pc = this.pc = new RTCPeerConnection({ iceServers: this.iceServers });
     this.candidates = [];
+    this.candidateTypes = new Set();
     pc.onicecandidate = ({ candidate }) => {
-      if (candidate) this.socket.emit('rtc-signal', { candidate: candidate.toJSON() });
+      if (!candidate) return;
+      const type = / typ (\w+)/.exec(candidate.candidate || '');
+      if (type) this.candidateTypes.add(type[1]);
+      this.socket.emit('rtc-signal', { candidate: candidate.toJSON() });
+    };
+    pc.onicecandidateerror = (event) => {
+      console.info('[FileBridge] ICE server error', event.errorCode, event.url);
+    };
+    pc.oniceconnectionstatechange = () => {
+      console.info('[FileBridge] iceConnectionState:', pc.iceConnectionState);
     };
     pc.onconnectionstatechange = () => {
-      if (this.pc === pc && ['failed', 'closed', 'disconnected'].includes(pc.connectionState)) this.close();
+      if (this.pc !== pc) return;
+      console.info('[FileBridge] connectionState:', pc.connectionState);
+      // `disconnected` is often transient; let the timeout or channel close decide.
+      if (['failed', 'closed'].includes(pc.connectionState)) this.close();
     };
     pc.ondatachannel = ({ channel }) => this.attach(channel);
-    setTimeout(() => { if (this.pc === pc && this.dc?.readyState !== 'open') this.close(); }, 8000);
+    this.iceTimer = setTimeout(() => {
+      if (this.pc !== pc || this.dc?.readyState === 'open') return;
+      const types = this.candidateTypes.size ? `候选 ${[...this.candidateTypes].join('/')}` : '未收集到候选';
+      this.close(`直传未建立（${types}），已回退服务器转发`);
+    }, 12000);
     try {
       if (initiator) {
         this.attach(pc.createDataChannel('files'));
@@ -57,7 +81,21 @@ class FileTransport {
       }
     } catch { if (this.pc === pc) this.close(); }
   }
-  async signal({ description, candidate }) {
+  // A browser hides its host address behind an mDNS `.local` name. When the
+  // server shares a subnet and reports the peer's real address, add an extra
+  // literal-address candidate so ICE can still connect if mDNS cannot resolve.
+  expandCandidate(candidate, from) {
+    const list = [candidate];
+    if (!from || typeof candidate?.candidate !== 'string') return list;
+    const parts = candidate.candidate.split(' ');
+    if (parts.length < 8 || !/\.local$/i.test(parts[4] || '')) return list;
+    const rewritten = parts.slice();
+    rewritten[0] = `candidate:lan${parts[0].split(':')[1] || Math.random().toString(36).slice(2, 8)}`;
+    rewritten[4] = from;
+    list.push({ ...candidate, candidate: rewritten.join(' ') });
+    return list;
+  }
+  async signal({ description, candidate, from }) {
     const pc = this.pc;
     if (!pc) return;
     if (description) {
@@ -68,15 +106,17 @@ class FileTransport {
         this.socket.emit('rtc-signal', { description: pc.localDescription.toJSON() });
       }
     } else if (candidate) {
-      if (pc.remoteDescription) await pc.addIceCandidate(candidate);
-      else this.candidates.push(candidate);
+      for (const item of this.expandCandidate(candidate, from)) {
+        if (pc.remoteDescription) await pc.addIceCandidate(item);
+        else this.candidates.push(item);
+      }
     }
   }
   attach(dc) {
     this.dc = dc;
     dc.binaryType = 'arraybuffer';
     dc.bufferedAmountLowThreshold = 256 * 1024;
-    dc.onopen = () => this.hooks.route('设备直传 · 不经过服务器');
+    dc.onopen = () => { clearTimeout(this.iceTimer); this.iceTimer = null; this.hooks.route('设备直传 · 不经过服务器'); };
     dc.onclose = () => { if (this.dc === dc) this.close(); };
     dc.onmessage = ({ data }) => {
       try {

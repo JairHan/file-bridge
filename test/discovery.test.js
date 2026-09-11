@@ -62,7 +62,9 @@ test('authenticated discovery, isolation, pairing and transfers', { timeout: 150
   assert.match((await c.emitWithAck('file-packet', { kind: 'begin', size: 1 })).error, /尚未连接/);
   const signal = once(b, 'rtc-signal');
   a.emit('rtc-signal', { description: { type: 'offer', sdp: 'test-signal' } });
-  assert.equal((await signal)[0].description.sdp, 'test-signal');
+  const [relayedSignal] = await signal;
+  assert.equal(relayedSignal.description.sdp, 'test-signal');
+  assert.ok('from' in relayedSignal);
   b.on('file-packet', (packet, ack) => ack({ bytes: Buffer.isBuffer(packet.data) ? packet.data.length : 0 }));
   assert.equal((await a.emitWithAck('file-packet', { kind: 'data', data: Buffer.alloc(256 * 1024) })).bytes, 256 * 1024);
   assert.match((await a.emitWithAck('file-packet', { kind: 'data', data: Buffer.alloc(256 * 1024 + 1) })).error, /分块过大/);
@@ -86,6 +88,7 @@ test('authenticated discovery, isolation, pairing and transfers', { timeout: 150
   assert.equal((await a.emitWithAck('send-text', { text: 'blocked' })).ok, false);
   const room = await b.emitWithAck('create-room');
   assert.match(room.code, /^\d{4}$/);
+  assert.ok(Array.isArray(room.iceServers));
   const joined = await c.emitWithAck('join-room', room.code);
   assert.equal(joined.ok, true);
   assert.equal((await c.emitWithAck('join-room', room.code)).ok, false);

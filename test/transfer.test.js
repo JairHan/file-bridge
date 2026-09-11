@@ -4,7 +4,7 @@ const vm = require('node:vm');
 const fs = require('node:fs');
 const path = require('node:path');
 
-const sandbox = { window: {}, performance, setTimeout, clearTimeout, ArrayBuffer, Uint8Array, Blob, URL };
+const sandbox = { window: {}, performance, setTimeout, clearTimeout, ArrayBuffer, Uint8Array, Blob, URL, console };
 vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../public/transfer.js'), 'utf8'), sandbox);
 const Transport = sandbox.window.FileTransport;
 function create() {
@@ -73,4 +73,54 @@ test('direct pipeline keeps at most four blocks awaiting acknowledgement and res
   assert.equal(sent, 6 * 1024 * 1024);
   assert.equal(frames, 384);
   assert.equal(peak, 4);
+});
+
+test('offer/answer and candidates flow both ways; mDNS candidates get a literal fallback', async () => {
+  class FakeChannel {
+    constructor() { this.readyState = 'connecting'; }
+    send() {}
+    close() {}
+    addEventListener() {}
+    removeEventListener() {}
+  }
+  class FakePC {
+    constructor() { this.iceCandidates = []; FakePC.instances.push(this); }
+    createDataChannel() { this.channel = new FakeChannel(); return this.channel; }
+    async createOffer() { return { type: 'offer', sdp: 'offer' }; }
+    async createAnswer() { return { type: 'answer', sdp: 'answer' }; }
+    async setLocalDescription(desc) { this.localDescription = { ...desc, toJSON: () => ({ type: desc.type, sdp: desc.sdp }) }; }
+    async setRemoteDescription(desc) { this.remoteDescription = desc; }
+    async addIceCandidate(candidate) { this.iceCandidates.push(candidate); }
+    close() {}
+  }
+  FakePC.instances = [];
+  const env = { window: { RTCPeerConnection: FakePC }, performance, setTimeout, clearTimeout, ArrayBuffer, Uint8Array, Blob, URL, RTCPeerConnection: FakePC, console };
+  vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../public/transfer.js'), 'utf8'), env);
+  const T = env.window.FileTransport;
+  class FakeSocket {
+    constructor() { this.handlers = {}; this.other = null; }
+    on(evt, fn) { (this.handlers[evt] ||= []).push(fn); }
+    emit(evt, payload) { if (evt === 'rtc-signal' && this.other) for (const fn of this.other.handlers['rtc-signal'] || []) fn(payload); }
+  }
+  const sa = new FakeSocket();
+  const sb = new FakeSocket();
+  sa.other = sb; sb.other = sa;
+  const hooks = { route() {}, receiveProgress() {}, received() {} };
+  const a = new T(sa, hooks);
+  const b = new T(sb, hooks);
+  await Promise.all([a.start(true), b.start(false)]);
+  await new Promise(resolve => setTimeout(resolve, 20));
+  const [pa, pb] = FakePC.instances;
+  assert.equal(pa.remoteDescription.type, 'answer');
+  assert.equal(pb.remoteDescription.type, 'offer');
+
+  const mdns = { candidate: 'candidate:1 1 udp 100 abc.local 5000 typ host', sdpMid: '0', sdpMLineIndex: 0 };
+  const expanded = a.expandCandidate(mdns, '192.168.3.20');
+  assert.equal(expanded.length, 2);
+  assert.equal(expanded[0], mdns);
+  assert.match(expanded[1].candidate, /192\.168\.3\.20 5000 typ host/);
+  assert.equal(a.expandCandidate(mdns, null).length, 1);
+  assert.equal(a.expandCandidate({ candidate: 'candidate:1 1 udp 100 192.168.3.9 5000 typ host' }, '192.168.3.20').length, 1);
+  a.close();
+  b.close();
 });

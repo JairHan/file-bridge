@@ -294,6 +294,7 @@ createBtn.addEventListener('click', () => {
     createBtn.disabled = false;
     if (!res?.ok) return setTip(res?.error || '生成失败', true);
     transport.setLimits({ relay: res.maxFileSize });
+    transport.setIceServers(res.iceServers);
     rememberRoom(res);
     openChat(res.code);
     showSystem(`配对码 ${res.code} 已生成，请在另一台设备输入`);
@@ -310,6 +311,7 @@ joinForm.addEventListener('submit', (e) => {
   socket.emit('join-room', code, (res) => {
     if (!res?.ok) return setTip(res?.error || '加入失败', true);
     transport.setLimits({ relay: res.maxFileSize });
+    transport.setIceServers(res.iceServers);
     rememberRoom(res);
     openChat(res.code);
     setPeer(Boolean(res.connected));
@@ -675,9 +677,10 @@ socket.on('nearby-devices', ({ self, devices }) => {
   }
 });
 
-socket.on('nearby-connected', ({ code, resumeToken, maxFileSize: limit }) => {
+socket.on('nearby-connected', ({ code, resumeToken, maxFileSize: limit, iceServers }) => {
   rememberRoom({ code, resumeToken });
   transport.setLimits({ relay: limit });
+  transport.setIceServers(iceServers);
   openChat(code);
   setPeer(true);
   showSystem('已通过同网络设备发现建立连接，无需输入配对码');
@@ -702,6 +705,7 @@ socket.on('connect', () => {
     }
     rememberRoom(res);
     transport.setLimits({ relay: res.maxFileSize });
+    transport.setIceServers(res.iceServers);
     openChat(res.code);
     setPeer(res.connected);
     showSystem(res.connected ? '原会话已恢复' : '原会话已恢复，等待另一台设备重连');

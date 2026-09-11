@@ -5,14 +5,34 @@ const crypto = require('crypto');
 const express = require('express');
 const { Server } = require('socket.io');
 const proxyaddr = require('proxy-addr');
+const ipaddr = require('ipaddr.js');
 const { networkKey, deviceLabel } = require('./discovery');
 const trustProxy = proxyaddr.compile(process.env.TRUST_PROXY || 'loopback');
 
-const PORT = Number(process.env.PORT || 5000);
+const PORT = Number(process.env.PORT || 5001);
 const HOST = process.env.HOST || '0.0.0.0';
 const MAX_FILE_SIZE = Number(process.env.MAX_FILE_SIZE || 20 * 1024 * 1024);
 const ROOM_TTL_MS = Number(process.env.ROOM_TTL_MS || 30 * 60 * 1000);
 const SESSION_TTL_MS = Number(process.env.SESSION_TTL_MS || 24 * 60 * 60 * 1000);
+
+// ICE servers handed to browsers. A public STUN server lets ICE discover a
+// reachable path when mDNS host candidates cannot be resolved. Set STUN_URLS=
+// to disable, or provide TURN for networks that block peer-to-peer UDP.
+function buildIceServers() {
+  const servers = [];
+  const stun = (process.env.STUN_URLS ?? 'stun:stun.l.google.com:19302')
+    .split(',').map((url) => url.trim()).filter(Boolean);
+  if (stun.length) servers.push({ urls: stun });
+  if (process.env.TURN_URL) {
+    servers.push({
+      urls: process.env.TURN_URL.split(',').map((url) => url.trim()).filter(Boolean),
+      username: process.env.TURN_USERNAME || '',
+      credential: process.env.TURN_CREDENTIAL || ''
+    });
+  }
+  return servers;
+}
+const ICE_SERVERS = buildIceServers();
 
 function getAccessHosts() {
   if (HOST !== '0.0.0.0' && HOST !== '::') return [HOST];
@@ -190,6 +210,14 @@ app.post('/api/logout', (req, res) => {
 app.get('/login.css', (_req, res) => res.sendFile(path.join(__dirname, 'public', 'login.css')));
 app.get('/login.js', (_req, res) => res.sendFile(path.join(__dirname, 'public', 'login.js')));
 
+// Icons load in browser chrome even before sign-in, so serve them publicly too.
+for (const icon of ['favicon.ico', 'favicon.svg', 'favicon-16.png', 'favicon-32.png', 'apple-touch-icon.png']) {
+  app.get(`/${icon}`, (_req, res) => {
+    res.setHeader('Cache-Control', 'public, max-age=86400');
+    res.sendFile(path.join(__dirname, 'public', icon));
+  });
+}
+
 app.use((req, res, next) => {
   if (isAuthenticatedRequest(req)) return next();
 
@@ -256,7 +284,7 @@ function attachMember(socket, code) {
   socket.data.resumeToken = resumeToken;
   socket.data.roomCode = code;
   socket.join(code);
-  return { ok: true, code, resumeToken, maxFileSize: MAX_FILE_SIZE, connected: roomSize(code) === 2 };
+  return { ok: true, code, resumeToken, maxFileSize: MAX_FILE_SIZE, iceServers: ICE_SERVERS, connected: roomSize(code) === 2 };
 }
 
 function reconnectPeers(socket, code) {
@@ -295,8 +323,12 @@ function publishDevices() {
 io.on('connection', (socket) => {
   socket.data.roomCode = null;
   const clientIp = proxyaddr(socket.request, trustProxy);
+  const netKey = networkKey(clientIp);
   socket.data.clientIp = clientIp;
-  socket.data.networkKey = networkKey(clientIp);
+  socket.data.networkKey = netKey;
+  // Only when the server shares a subnet with the peer is its observed address
+  // the peer's real LAN address, safe to substitute for an mDNS .local name.
+  socket.data.lanAddress = netKey?.startsWith('lan:') ? ipaddr.process(clientIp).toString() : null;
   socket.data.deviceLabel = `${deviceLabel(socket.handshake.headers['user-agent'])} · ${crypto.randomBytes(2).toString('hex').toUpperCase()}`;
   publishDevices();
 
@@ -323,7 +355,7 @@ io.on('connection', (socket) => {
     socket.data.roomCode = code;
     socket.data.resumeToken = payload.resumeToken;
     socket.join(code);
-    ack({ ok: true, code, resumeToken: payload.resumeToken, maxFileSize: MAX_FILE_SIZE, connected: roomSize(code) === 2 });
+    ack({ ok: true, code, resumeToken: payload.resumeToken, maxFileSize: MAX_FILE_SIZE, iceServers: ICE_SERVERS, connected: roomSize(code) === 2 });
     reconnectPeers(socket, code);
     publishDevices();
   });
@@ -332,7 +364,8 @@ io.on('connection', (socket) => {
   socket.on('rtc-signal', (payload) => {
     const code = socket.data.roomCode;
     if (!code || roomSize(code) !== 2 || JSON.stringify(payload || {}).length > 64000) return;
-    socket.to(code).emit('rtc-signal', payload);
+    // `from` lets the peer fall back from an unresolvable mDNS .local candidate.
+    socket.to(code).emit('rtc-signal', { ...payload, from: socket.data.lanAddress });
   });
   socket.on('file-packet', (packet, ack = () => { }) => {
     const code = socket.data.roomCode;
@@ -488,5 +521,6 @@ server.listen(PORT, HOST, () => {
   console.log(`File Bridge listening on ${address.address}:${address.port}`);
   console.log(`File Bridge running at ${accessUrls.join(', ')}`);
   console.log(`Max file size: ${Math.floor(MAX_FILE_SIZE / 1024 / 1024)}MB`);
+  console.log(`ICE servers: ${ICE_SERVERS.flatMap((server) => server.urls).join(', ') || 'disabled'}`);
   console.log('图片验证码已启用：连续输错 3 次锁定 1 小时');
 });

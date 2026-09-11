@@ -33,6 +33,7 @@ npm start
 ```bash
 npm run dev  # 修改代码后自动重启
 npm test     # 自动化测试
+npm run icons  # 重新生成标签图标（修改 favicon.svg 后）
 ```
 
 ## 使用方法
@@ -47,7 +48,9 @@ npm test     # 自动化测试
 
 局域网直接部署时，按服务器网卡的实际网段发现设备；公网部署时，按相同出口 IP 发现候选设备。共享出口 IP 不一定代表同一局域网，因此要核对设备名称。
 
-发现设备不代表直传已经成功。WebRTC 当前仅使用本地 ICE 候选，没有外部 STUN/TURN 服务；代理、VPN、不同网段或 Wi-Fi 客户端隔离可能阻止直传，此时回退到服务器。文字始终经过服务器。
+发现设备不代表直传已经成功。WebRTC 默认使用本地主机候选（浏览器会把内网地址隐藏为 mDNS 的 `.local` 名称），并默认向 `STUN_URLS` 查询服务器反射候选；可通过环境变量配置 STUN，网络完全禁止点对点 UDP 时也可配置 TURN。代理、VPN / TUN 虚拟网卡、不同网段或 Wi-Fi 客户端隔离仍可能阻止直传，此时回退到服务器转发。文字始终经过服务器。
+
+若长时间停留在“正在建立直传…”后回退，状态栏会显示收集到的候选类型（host/srflx/relay），浏览器控制台另有 ICE 诊断日志。同一局域网内直传失败最常见的原因是设备开启了代理 / VPN 的 TUN 模式，需要把本地网段加入“直连 / 绕过代理”规则；iOS 还需确认 Safari 已获得“本地网络”权限。
 
 ### 文件限制
 
@@ -70,6 +73,10 @@ npm test     # 自动化测试
 | `SESSION_TTL_MS` | `86400000` | 登录会话有效期，单位毫秒 |
 | `AUTH_STATE_DIR` | 项目内 `.data` | 失败次数、锁定时间的持久化目录 |
 | `TRUST_PROXY` | `loopback` | 信任的反向代理 IP/CIDR，多个用逗号分隔 |
+| `STUN_URLS` | `stun:stun.l.google.com:19302` | 下发给浏览器的 STUN 地址，多个用逗号分隔；设为空可禁用 |
+| `TURN_URL` | 未设置 | 可选的 TURN 地址（逗号分隔），用于点对点 UDP 被完全阻断的网络 |
+| `TURN_USERNAME` | 未设置 | TURN 用户名 |
+| `TURN_CREDENTIAL` | 未设置 | TURN 密码 |
 | `NODE_ENV` | 未设置 | 设为 `production` 时静态资源缓存 1 小时 |
 
 例如，配对码及断线位置保留 30 分钟，登录有效期为 24 小时：
@@ -138,6 +145,10 @@ public/zip.js           文件夹 ZIP 打包（仅存储，流式 CRC）
 public/style.css       聊天与配对页样式
 public/login.css       登录页样式
 public/login.js        登录页验证码与提交逻辑
+public/favicon.svg     浏览器标签图标（矢量源）
+public/favicon.ico     标签图标回退（16/32/48）
+public/apple-touch-icon.png  iOS 主屏图标
+scripts/generate-icons.js    由矢量定义重新生成上述位图图标
 test/                  Node 自动化测试
 ```
 
