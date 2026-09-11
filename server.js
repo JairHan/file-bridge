@@ -8,9 +8,9 @@ const proxyaddr = require('proxy-addr');
 const { networkKey, deviceLabel } = require('./discovery');
 const trustProxy = proxyaddr.compile(process.env.TRUST_PROXY || 'loopback');
 
-const PORT = Number(process.env.PORT || 5001);
+const PORT = Number(process.env.PORT || 5000);
 const HOST = process.env.HOST || '0.0.0.0';
-const MAX_FILE_SIZE = Number(process.env.MAX_FILE_SIZE || 1024 * 1024 * 1024);
+const MAX_FILE_SIZE = Number(process.env.MAX_FILE_SIZE || 20 * 1024 * 1024);
 const ROOM_TTL_MS = Number(process.env.ROOM_TTL_MS || 30 * 60 * 1000);
 const SESSION_TTL_MS = Number(process.env.SESSION_TTL_MS || 24 * 60 * 60 * 1000);
 
@@ -33,17 +33,34 @@ const app = express();
 app.set('trust proxy', trustProxy);
 app.disable('x-powered-by');
 app.use(express.json({ limit: '2kb' }));
-app.use((_req, res, next) => {
+app.use((req, res, next) => {
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('X-Frame-Options', 'DENY');
   res.setHeader('Referrer-Policy', 'no-referrer');
   res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
+  // All scripts and styles are external files; captcha images use blob URLs.
+  res.setHeader('Content-Security-Policy', [
+    "default-src 'self'",
+    "script-src 'self'",
+    "style-src 'self'",
+    "img-src 'self' blob:",
+    "connect-src 'self' ws: wss:",
+    "font-src 'self'",
+    "object-src 'none'",
+    "base-uri 'none'",
+    "form-action 'self'",
+    "frame-ancestors 'none'"
+  ].join('; '));
+  if (req.secure || req.headers['x-forwarded-proto'] === 'https') {
+    res.setHeader('Strict-Transport-Security', 'max-age=31536000');
+  }
   next();
 });
 
 const server = http.createServer(app);
 const io = new Server(server, {
-  maxHttpBufferSize: MAX_FILE_SIZE + 1024 * 1024
+  // Largest legitimate frame is a 256 KiB file-packet block (rtc-signal/text are smaller).
+  maxHttpBufferSize: 512 * 1024
 });
 
 const COOKIE_NAME = 'file_bridge_session';
@@ -169,6 +186,10 @@ app.post('/api/logout', (req, res) => {
   res.json({ ok: true });
 });
 
+// Login assets must load before authentication; everything else stays gated.
+app.get('/login.css', (_req, res) => res.sendFile(path.join(__dirname, 'public', 'login.css')));
+app.get('/login.js', (_req, res) => res.sendFile(path.join(__dirname, 'public', 'login.js')));
+
 app.use((req, res, next) => {
   if (isAuthenticatedRequest(req)) return next();
 
@@ -189,9 +210,28 @@ app.use(express.static(path.join(__dirname, 'public'), {
 // Rooms reserve each disconnected member for ROOM_TTL_MS.
 const rooms = new Map();
 
+// Limit 4-digit pairing-code guessing per client address.
+const JOIN_ATTEMPT_LIMIT = 8;
+const JOIN_ATTEMPT_WINDOW_MS = 60_000;
+const joinAttempts = new Map();
+
+function consumeJoinAttempt(key) {
+  const now = Date.now();
+  const record = joinAttempts.get(key);
+  if (!record || now >= record.resetAt) {
+    joinAttempts.set(key, { count: 1, resetAt: now + JOIN_ATTEMPT_WINDOW_MS });
+    return { allowed: true };
+  }
+  record.count += 1;
+  if (record.count > JOIN_ATTEMPT_LIMIT) {
+    return { allowed: false, retryAfter: Math.ceil((record.resetAt - now) / 1000) };
+  }
+  return { allowed: true };
+}
+
 function generateCode() {
   for (let i = 0; i < 100; i += 1) {
-    const code = String(Math.floor(1000 + Math.random() * 9000));
+    const code = String(crypto.randomInt(1000, 10000));
     if (!rooms.has(code)) return code;
   }
   return null;
@@ -254,7 +294,9 @@ function publishDevices() {
 
 io.on('connection', (socket) => {
   socket.data.roomCode = null;
-  socket.data.networkKey = networkKey(proxyaddr(socket.request, trustProxy));
+  const clientIp = proxyaddr(socket.request, trustProxy);
+  socket.data.clientIp = clientIp;
+  socket.data.networkKey = networkKey(clientIp);
   socket.data.deviceLabel = `${deviceLabel(socket.handshake.headers['user-agent'])} · ${crypto.randomBytes(2).toString('hex').toUpperCase()}`;
   publishDevices();
 
@@ -340,6 +382,8 @@ io.on('connection', (socket) => {
 
   socket.on('join-room', (rawCode, ack = () => { }) => {
     if (socket.data.roomCode) return ack({ ok: false, error: '你已经在一个会话中' });
+    const attempt = consumeJoinAttempt(socket.data.clientIp);
+    if (!attempt.allowed) return ack({ ok: false, error: `尝试过于频繁，请 ${attempt.retryAfter} 秒后再试` });
     const code = String(rawCode || '').trim();
     cleanupRoom(code);
     const room = rooms.get(code);
@@ -361,6 +405,7 @@ io.on('connection', (socket) => {
       return;
     }
 
+    joinAttempts.delete(socket.data.clientIp);
     ack(attachMember(socket, code));
     publishDevices();
     socket.to(code).emit('peer-status', { connected: true });
@@ -384,36 +429,6 @@ io.on('connection', (socket) => {
     };
     socket.to(code).emit('text-message', message);
     ack({ ok: true, message });
-  });
-
-  socket.on('send-file', (payload, ack = () => { }) => {
-    const code = socket.data.roomCode;
-    if (!code || !rooms.has(code)) return ack({ ok: false, error: '当前未配对' });
-    if (roomSize(code) < 2) return ack({ ok: false, error: '另一台设备尚未连接' });
-
-    const name = String(payload?.name || 'file').slice(0, 255);
-    const type = String(payload?.type || 'application/octet-stream').slice(0, 120);
-    const size = Number(payload?.size || 0);
-    const data = payload?.data;
-
-    if (!Number.isFinite(size) || size <= 0 || size > MAX_FILE_SIZE) {
-      return ack({ ok: false, error: `文件大小必须在 1B - ${Math.floor(MAX_FILE_SIZE / 1024 / 1024)}MB 之间` });
-    }
-    if (!data || typeof data.byteLength !== 'number' || data.byteLength !== size) {
-      return ack({ ok: false, error: '文件数据不完整' });
-    }
-
-    const file = {
-      id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-      name,
-      type,
-      size,
-      data,
-      sentAt: Date.now()
-    };
-
-    socket.to(code).emit('file-message', file);
-    ack({ ok: true, meta: { ...file, data: undefined } });
   });
 
   socket.on('leave-room', (ack = () => { }) => {
@@ -447,8 +462,12 @@ io.on('connection', (socket) => {
 setInterval(() => {
   const now = Date.now();
 
-  for (const [code, room] of rooms) {
+  for (const code of rooms.keys()) {
     cleanupRoom(code);
+  }
+
+  for (const [key, record] of joinAttempts) {
+    if (now >= record.resetAt) joinAttempts.delete(key);
   }
 
   for (const [token, session] of sessions) {
@@ -464,7 +483,9 @@ setInterval(() => {
 }, 60_000).unref();
 
 server.listen(PORT, HOST, () => {
-  const accessUrls = getAccessHosts().map((host) => `http://${host}:${server.address().port}`);
+  const address = server.address();
+  const accessUrls = getAccessHosts().map((host) => `http://${host}:${address.port}`);
+  console.log(`File Bridge listening on ${address.address}:${address.port}`);
   console.log(`File Bridge running at ${accessUrls.join(', ')}`);
   console.log(`Max file size: ${Math.floor(MAX_FILE_SIZE / 1024 / 1024)}MB`);
   console.log('图片验证码已启用：连续输错 3 次锁定 1 小时');

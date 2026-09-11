@@ -24,20 +24,36 @@ const logoutBtn = $('logoutBtn');
 const lockBtn = $('lockBtn');
 
 let transferController = null;
+// 接收方当前正在接收的文件气泡，用于就地更新绿色进度。
+let incomingFile = null;
 const transport = new FileTransport(socket, {
   route: text => { $('transferRoute').textContent = text; },
   receiveProgress: (file, cancelled = false) => {
-    $('receiveProgress').textContent = cancelled ? '接收已中断' : `正在接收 ${file.name} · ${(file.bytes / file.size * 100).toFixed(1)}% · ${formatBytes(file.bytes)}`;
+    if (cancelled) {
+      if (incomingFile?.file === file) incomingFile.interrupt();
+      incomingFile = null;
+      $('receiveProgress').textContent = '接收已中断';
+      return;
+    }
+    // 第一块数据到达时就创建气泡，而不是等文件收完。
+    if (incomingFile?.file !== file) incomingFile = addProgressFileMessage(file);
+    const percent = file.size ? Math.min(100, file.bytes / file.size * 100) : 0;
+    incomingFile.setProgress(percent);
+    $('receiveProgress').textContent = `正在接收 ${file.name} · ${percent.toFixed(1)}% · ${formatBytes(file.bytes)} / ${formatBytes(file.size)}`;
   },
   received: (file, url) => {
     $('receiveProgress').textContent = '文件接收完成';
-    addFileMessage(file, false, url);
+    if (incomingFile?.file === file) {
+      incomingFile.complete(url);
+      incomingFile = null;
+    } else {
+      addFileMessage(file, false, url);
+    }
   }
 });
 let activeRoom = null;
 let peerConnected = false;
 let selectedFiles = [];
-let maxFileSize = 20 * 1024 * 1024;
 // 系统生成的垃圾文件，加入发送队列时直接忽略。
 const ignoredFileNames = new Set(['.DS_Store', 'Thumbs.db', 'desktop.ini']);
 
@@ -198,6 +214,63 @@ function addFileMessage(file, mine, blobUrl = null) {
   scrollBottom();
 }
 
+// 接收方在收到第一块数据时立即显示气泡，并用绿色填充显示接收进度。
+function addProgressFileMessage(file) {
+  const wrapper = document.createElement('div');
+  wrapper.className = 'message file-progress-message theirs';
+
+  const fill = document.createElement('div');
+  fill.className = 'file-fill';
+
+  const content = document.createElement('a');
+  content.className = 'file-message';
+
+  const icon = document.createElement('div');
+  icon.className = 'file-icon';
+  icon.textContent = '📄';
+
+  const meta = document.createElement('div');
+  meta.className = 'file-meta';
+  const name = document.createElement('div');
+  name.className = 'file-name';
+  name.textContent = file.name;
+  const size = document.createElement('div');
+  size.className = 'file-size';
+  size.textContent = '接收中 · 0%';
+  meta.append(name, size);
+  content.append(icon, meta);
+
+  const time = document.createElement('span');
+  time.className = 'time';
+  time.textContent = timeText(Date.now());
+  wrapper.append(fill, content, time);
+  messages.appendChild(wrapper);
+  scrollBottom();
+
+  return {
+    file,
+    setProgress(percent) {
+      const clamped = Math.max(0, Math.min(100, percent));
+      fill.style.width = `${clamped}%`;
+      size.textContent = `接收中 · ${clamped.toFixed(1)}% · ${formatBytes(Math.round(file.size * clamped / 100))} / ${formatBytes(file.size)}`;
+    },
+    interrupt() {
+      wrapper.classList.add('interrupted');
+      size.textContent = '接收已中断';
+    },
+    complete(url) {
+      fill.style.width = '100%';
+      content.href = url;
+      content.download = file.name;
+      content.title = '点击下载';
+      content.classList.add('download-link');
+      wrapper.classList.add('complete');
+      size.textContent = `${formatBytes(file.size)} · 点击下载`;
+      scrollBottom();
+    }
+  };
+}
+
 
 async function logout() {
   forgetRoom();
@@ -220,7 +293,7 @@ createBtn.addEventListener('click', () => {
   socket.emit('create-room', (res) => {
     createBtn.disabled = false;
     if (!res?.ok) return setTip(res?.error || '生成失败', true);
-    maxFileSize = res.maxFileSize || maxFileSize;
+    transport.setLimits({ relay: res.maxFileSize });
     rememberRoom(res);
     openChat(res.code);
     showSystem(`配对码 ${res.code} 已生成，请在另一台设备输入`);
@@ -236,7 +309,7 @@ joinForm.addEventListener('submit', (e) => {
   const code = codeInput.value.trim();
   socket.emit('join-room', code, (res) => {
     if (!res?.ok) return setTip(res?.error || '加入失败', true);
-    maxFileSize = res.maxFileSize || maxFileSize;
+    transport.setLimits({ relay: res.maxFileSize });
     rememberRoom(res);
     openChat(res.code);
     setPeer(Boolean(res.connected));
@@ -604,7 +677,7 @@ socket.on('nearby-devices', ({ self, devices }) => {
 
 socket.on('nearby-connected', ({ code, resumeToken, maxFileSize: limit }) => {
   rememberRoom({ code, resumeToken });
-  maxFileSize = limit;
+  transport.setLimits({ relay: limit });
   openChat(code);
   setPeer(true);
   showSystem('已通过同网络设备发现建立连接，无需输入配对码');
@@ -628,7 +701,7 @@ socket.on('connect', () => {
       return;
     }
     rememberRoom(res);
-    maxFileSize = res.maxFileSize;
+    transport.setLimits({ relay: res.maxFileSize });
     openChat(res.code);
     setPeer(res.connected);
     showSystem(res.connected ? '原会话已恢复' : '原会话已恢复，等待另一台设备重连');
@@ -646,13 +719,6 @@ socket.on('room-status', ({ peers }) => {
 
 socket.on('text-message', (message) => {
   addTextMessage(message.text, false, message.sentAt);
-});
-
-socket.on('file-message', (file) => {
-  const blob = new Blob([file.data], { type: file.type || 'application/octet-stream' });
-  const url = URL.createObjectURL(blob);
-  addFileMessage(file, false, url);
-  showSystem(`收到文件：${file.name}`);
 });
 
 socket.on('disconnect', () => {

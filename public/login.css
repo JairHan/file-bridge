@@ -1,0 +1,268 @@
+    :root {
+      font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif;
+      color: #1d1d1f;
+      background: #f5f5f7;
+      font-synthesis: none;
+      -webkit-text-size-adjust: 100%;
+      --safe-top: env(safe-area-inset-top, 0px);
+      --safe-right: env(safe-area-inset-right, 0px);
+      --safe-bottom: env(safe-area-inset-bottom, 0px);
+      --safe-left: env(safe-area-inset-left, 0px);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html,
+    body {
+      margin: 0;
+      width: 100%;
+      min-height: 100%;
+    }
+
+    body {
+      min-height: 100dvh;
+      background: linear-gradient(180deg, #fbfbfd 0%, #f1f2f5 100%);
+      overscroll-behavior: none;
+    }
+
+    button,
+    input {
+      font: inherit;
+    }
+
+    button {
+      cursor: pointer;
+      touch-action: manipulation;
+      -webkit-tap-highlight-color: transparent;
+    }
+
+    input {
+      -webkit-appearance: none;
+      appearance: none;
+    }
+
+    .shell {
+      width: min(430px, calc(100% - 28px));
+      min-height: 100dvh;
+      margin: 0 auto;
+      display: grid;
+      place-items: center;
+      padding: max(28px, calc(var(--safe-top) + 18px)) var(--safe-right) max(28px, calc(var(--safe-bottom) + 18px)) var(--safe-left);
+    }
+
+    .card {
+      width: 100%;
+      padding: 34px;
+      background: rgba(255, 255, 255, .9);
+      -webkit-backdrop-filter: blur(24px);
+      backdrop-filter: blur(24px);
+      border: 1px solid rgba(0, 0, 0, .06);
+      box-shadow: 0 18px 60px rgba(0, 0, 0, .08);
+      border-radius: 28px;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      margin-bottom: 30px;
+    }
+
+    .brand-icon {
+      width: 54px;
+      height: 54px;
+      flex: 0 0 auto;
+      display: grid;
+      place-items: center;
+      border-radius: 16px;
+      background: #07c160;
+      color: white;
+      font-size: 29px;
+      font-weight: 700;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: 27px;
+      letter-spacing: -.5px;
+    }
+
+    .brand p {
+      margin: 5px 0 0;
+      color: #777;
+    }
+
+    label {
+      display: block;
+      margin-bottom: 8px;
+      color: #555;
+      font-size: 13px;
+      font-weight: 600;
+    }
+
+    input {
+      width: 100%;
+      height: 52px;
+      border: 1px solid #ddd;
+      background: #fafafa;
+      border-radius: 14px;
+      padding: 0 16px;
+      outline: none;
+      font-size: 16px;
+    }
+
+    input:focus {
+      border-color: #07c160;
+      box-shadow: 0 0 0 3px rgba(7, 193, 96, .12);
+    }
+
+    button {
+      width: 100%;
+      min-height: 52px;
+      margin-top: 14px;
+      border: 0;
+      border-radius: 14px;
+      background: #07c160;
+      color: #fff;
+      font-weight: 650;
+    }
+
+    button:hover {
+      background: #06ad56;
+    }
+
+    button:active {
+      transform: scale(.985);
+    }
+
+    button:disabled {
+      opacity: .55;
+      cursor: default;
+    }
+
+    .captcha-row {
+      display: flex;
+      gap: 10px;
+      align-items: center;
+    }
+
+    .captcha-row input {
+      flex: 1;
+      min-width: 0;
+      padding: 0 12px;
+    }
+
+    #refreshCaptcha {
+      flex: 0 0 116px;
+      width: 116px;
+      height: 52px;
+      min-height: 52px;
+      margin: 0;
+      padding: 0;
+      overflow: hidden;
+      background: #edf4ef;
+      border: 1px solid #d9e4dc;
+      border-radius: 12px;
+    }
+
+    #captchaImage {
+      display: block;
+      width: 100%;
+      height: 100%;
+      object-fit: contain;
+    }
+
+    .message {
+      min-height: 20px;
+      margin: 12px 0 0;
+      text-align: center;
+      font-size: 13px;
+      color: #d70015;
+    }
+
+    .tip {
+      margin: 18px 0 0;
+      color: #8a8a8f;
+      font-size: 12px;
+      line-height: 1.55;
+      text-align: center;
+    }
+
+    @media (max-width: 520px) {
+      body {
+        background: #f7f7f8;
+      }
+
+      .shell {
+        width: 100%;
+        min-height: 100dvh;
+        display: flex;
+        align-items: flex-start;
+        padding: max(14vh, calc(var(--safe-top) + 28px)) calc(12px + var(--safe-right)) calc(20px + var(--safe-bottom)) calc(12px + var(--safe-left));
+      }
+
+      .card {
+        padding: 28px 22px 24px;
+        border-radius: 24px;
+      }
+
+      .brand {
+        margin-bottom: 26px;
+      }
+
+      .brand-icon {
+        width: 50px;
+        height: 50px;
+        border-radius: 15px;
+        font-size: 27px;
+      }
+
+      h1 {
+        font-size: 25px;
+      }
+
+      .brand p {
+        font-size: 14px;
+      }
+
+      input,
+      button {
+        min-height: 54px;
+      }
+    }
+
+    @media (max-width: 360px) {
+      .shell {
+        padding-left: calc(10px + var(--safe-left));
+        padding-right: calc(10px + var(--safe-right));
+      }
+
+      .card {
+        padding: 24px 18px 20px;
+      }
+    }
+
+    @media (max-width: 900px) and (orientation: landscape) and (max-height: 520px) {
+      .shell {
+        align-items: flex-start;
+        padding-top: max(14px, calc(var(--safe-top) + 8px));
+        padding-bottom: max(14px, calc(var(--safe-bottom) + 8px));
+      }
+
+      .card {
+        max-width: 430px;
+        margin: 0 auto;
+        padding-top: 22px;
+        padding-bottom: 18px;
+      }
+
+      .brand {
+        margin-bottom: 18px;
+      }
+
+      .tip {
+        margin-top: 12px;
+      }
+    }

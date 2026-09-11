@@ -200,6 +200,20 @@ h1 { margin: 0; font-size: 27px; letter-spacing: -.5px; }
 .file-size { font-size: 11px; color: #777; margin-top: 2px; }
 .download-link { color: inherit; text-decoration: none; }
 
+/* 收发文件气泡的绿色填充，宽度跟随传输进度。 */
+.file-progress-message { position: relative; overflow: hidden; }
+.file-fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 0;
+  background: rgba(7, 193, 96, .28);
+  transition: width .18s linear;
+  pointer-events: none;
+}
+.file-progress-message.interrupted .file-fill { background: rgba(215, 0, 21, .16); }
+.file-progress-message > .file-message,
+.file-progress-message > .time { position: relative; z-index: 1; }
+
 .composer {
   padding: 12px 16px 14px;
   border-top: 1px solid #e9e9eb;

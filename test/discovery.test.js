@@ -34,6 +34,10 @@ test('authenticated discovery, isolation, pairing and transfers', { timeout: 150
   const challengeCookie = captcha.headers.get('set-cookie').split(';')[0];
   const login = await fetch(`${url}/api/login`, { method: 'POST', headers: { 'Content-Type': 'application/json', Cookie: challengeCookie }, body: JSON.stringify({ password: code }) });
   assert.equal(login.status, 200);
+  const loginPage = await fetch(`${url}/login`);
+  assert.match(loginPage.headers.get('content-security-policy'), /default-src 'self'/);
+  assert.equal((await fetch(`${url}/login.css`)).status, 200);
+  assert.equal((await fetch(`${url}/login.js`)).status, 200);
   const cookie = login.headers.get('set-cookie').split(';')[0];
   async function connect(ip, authenticated = true) {
     const s = io(url, { autoConnect: false, transports: ['websocket'], extraHeaders: { 'X-Forwarded-For': ip, ...(authenticated ? { Cookie: cookie } : {}) } });
@@ -59,16 +63,23 @@ test('authenticated discovery, isolation, pairing and transfers', { timeout: 150
   const signal = once(b, 'rtc-signal');
   a.emit('rtc-signal', { description: { type: 'offer', sdp: 'test-signal' } });
   assert.equal((await signal)[0].description.sdp, 'test-signal');
-  b.on('file-packet', (packet, ack) => ack({ bytes: packet.data?.length || 0 }));
+  b.on('file-packet', (packet, ack) => ack({ bytes: Buffer.isBuffer(packet.data) ? packet.data.length : 0 }));
   assert.equal((await a.emitWithAck('file-packet', { kind: 'data', data: Buffer.alloc(256 * 1024) })).bytes, 256 * 1024);
   assert.match((await a.emitWithAck('file-packet', { kind: 'data', data: Buffer.alloc(256 * 1024 + 1) })).error, /分块过大/);
   assert.match((await a.emitWithAck('file-packet', { kind: 'begin', size: 1024 ** 3 })).error, /大小限制/);
   const text = once(b, 'text-message');
   assert.equal((await a.emitWithAck('send-text', { text: 'hello LAN' })).ok, true);
   assert.equal((await text)[0].text, 'hello LAN');
-  const file = once(a, 'file-message');
-  assert.equal((await b.emitWithAck('send-file', { name: 'test.txt', size: 3, data: Buffer.from('abc') })).ok, true);
-  assert.equal(Buffer.from((await file)[0].data).toString(), 'abc');
+  // Server-relayed files now use ordered file-packet blocks (B -> A).
+  const relayed = [];
+  a.on('file-packet', (packet, ack) => {
+    relayed.push(packet.kind);
+    ack({ bytes: Buffer.isBuffer(packet.data) ? packet.data.length : 0 });
+  });
+  assert.equal((await b.emitWithAck('file-packet', { kind: 'begin', name: 'test.txt', type: 'text/plain', size: 3 })).bytes, 0);
+  assert.equal((await b.emitWithAck('file-packet', { kind: 'data', data: Buffer.from('abc') })).bytes, 3);
+  assert.equal((await b.emitWithAck('file-packet', { kind: 'end' })).bytes, 0);
+  assert.deepEqual(relayed, ['begin', 'data', 'end']);
   const left = once(a, 'peer-status');
   b.emit('leave-room');
   assert.equal((await left)[0].connected, false);
@@ -94,4 +105,10 @@ test('authenticated discovery, isolation, pairing and transfers', { timeout: 150
   await new Promise(resolve => setTimeout(resolve, 2100));
   const expired = await connect('198.51.100.20');
   assert.equal((await expired.emitWithAck('resume-room', joined)).ok, false);
+  // Pairing-code guessing is throttled per client address.
+  const guesser = await connect('192.0.2.77');
+  for (let i = 0; i < 8; i += 1) {
+    assert.equal((await guesser.emitWithAck('join-room', '0000')).ok, false);
+  }
+  assert.match((await guesser.emitWithAck('join-room', '0000')).error, /尝试过于频繁/);
 });

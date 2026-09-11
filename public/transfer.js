@@ -1,15 +1,27 @@
 /* Ordered, acknowledged file blocks. File bytes use WebRTC when available. */
+function formatLimit(bytes) {
+  if (bytes >= 1024 ** 3) return `${bytes % (1024 ** 3) ? (bytes / 1024 ** 3).toFixed(1) : bytes / 1024 ** 3} GiB`;
+  return `${Math.floor(bytes / 1024 / 1024)} MB`;
+}
+
 class FileTransport {
   constructor(socket, hooks) {
     this.socket = socket;
     this.hooks = hooks;
     this.pending = new Map();
+    // Device-to-device limit; these bytes never reach the server.
     this.limit = 1024 ** 3;
+    // Server-relayed limit, supplied by the server and lower by default.
+    this.relayLimit = 1024 ** 3;
     socket.on('rtc-start', ({ initiator }) => this.start(initiator));
     socket.on('rtc-signal', data => this.signal(data).catch(() => this.close()));
     socket.on('file-packet', (packet, ack) => {
-      try { ack(this.receive(packet)); } catch (e) { ack({ error: e.message }); }
+      try { ack(this.receive(packet, 'relay')); } catch (e) { ack({ error: e.message }); }
     });
+  }
+  setLimits({ direct, relay } = {}) {
+    if (Number.isSafeInteger(direct) && direct > 0) this.limit = direct;
+    if (Number.isSafeInteger(relay) && relay > 0) this.relayLimit = relay;
   }
   close() {
     clearTimeout(this.receiveTimer);
@@ -68,16 +80,16 @@ class FileTransport {
     dc.onclose = () => { if (this.dc === dc) this.close(); };
     dc.onmessage = ({ data }) => {
       try {
-        if (typeof data !== 'string') { this.receive({ kind: 'data', data }); return; }
+        if (typeof data !== 'string') { this.receive({ kind: 'data', data }, 'direct'); return; }
         const packet = JSON.parse(data);
         if (packet.reply) { this.pending.get(packet.reply)?.(packet); return; }
         let result;
-        try { result = this.receive(packet); } catch (e) { result = { error: e.message }; }
+        try { result = this.receive(packet, 'direct'); } catch (e) { result = { error: e.message }; }
         dc.send(JSON.stringify({ ...result, reply: packet.request }));
       } catch { this.close(); }
     };
   }
-  receive(packet) {
+  receive(packet, route = 'relay') {
     // Avoid allocating/clearing a timer for every binary frame.
     this.lastReceivedAt = performance.now();
     if (!this.receiveTimer) {
@@ -94,7 +106,8 @@ class FileTransport {
     }
     if (packet.kind === 'begin') {
       if (this.incoming) throw new Error('接收端正在接收另一个文件');
-      if (!Number.isSafeInteger(packet.size) || packet.size < 1 || packet.size > this.limit) throw new Error('文件大小超出接收限制');
+      const limit = route === 'direct' ? this.limit : this.relayLimit;
+      if (!Number.isSafeInteger(packet.size) || packet.size < 1 || packet.size > limit) throw new Error('文件大小超出接收限制');
       this.incoming = { name: String(packet.name).slice(0, 255), type: String(packet.type).slice(0, 120), size: packet.size, bytes: 0, parts: [], started: performance.now() };
       this.hooks.receiveProgress(this.incoming);
       return {};
@@ -212,6 +225,12 @@ class FileTransport {
     }
     const direct = this.dc?.readyState === 'open';
     const route = direct ? '设备直传' : '服务器转发';
+    const routeLimit = direct ? this.limit : this.relayLimit;
+    if (file.size > routeLimit) {
+      throw new Error(direct
+        ? `文件超过设备直传上限 ${formatLimit(this.limit)}`
+        : `文件超过服务器转发上限（${formatLimit(this.relayLimit)}），且未建立设备直传`);
+    }
     const started = performance.now();
     let lastProgress = started;
     let acknowledged = 0;
