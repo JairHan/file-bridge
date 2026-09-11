@@ -13,7 +13,11 @@ const messages = $('messages');
 const textInput = $('textInput');
 const sendBtn = $('sendBtn');
 const fileInput = $('fileInput');
+const folderInput = $('folderInput');
 const filePreview = $('filePreview');
+const filePreviewSummary = $('filePreviewSummary');
+const filePreviewList = $('filePreviewList');
+const clearFilesBtn = $('clearFilesBtn');
 const leaveBtn = $('leaveBtn');
 const statusText = $('statusText');
 const logoutBtn = $('logoutBtn');
@@ -32,8 +36,10 @@ const transport = new FileTransport(socket, {
 });
 let activeRoom = null;
 let peerConnected = false;
-let selectedFile = null;
+let selectedFiles = [];
 let maxFileSize = 20 * 1024 * 1024;
+// 系统生成的垃圾文件，加入发送队列时直接忽略。
+const ignoredFileNames = new Set(['.DS_Store', 'Thumbs.db', 'desktop.ini']);
 
 function setTip(text, error = false) {
   pairTip.textContent = text;
@@ -252,7 +258,7 @@ textInput.addEventListener('input', () => {
 
 function sendCurrent() {
   if (!peerConnected || transferController) return;
-  if (selectedFile) return sendSelectedFile();
+  if (selectedFiles.length) return sendSelectedFiles();
   const text = textInput.value.trim();
   if (!text) return;
   sendBtn.disabled = true;
@@ -266,70 +272,308 @@ function sendCurrent() {
 }
 
 fileInput.addEventListener('change', () => {
-  const file = fileInput.files?.[0];
-  if (!file) return;
-  if (file.size > transport.limit) {
-    showSystem(`文件过大，当前限制 ${formatBytes(transport.limit)}`);
-    fileInput.value = '';
-    return;
-  }
-  selectedFile = file;
-  filePreview.classList.remove('hidden');
-  filePreview.innerHTML = '';
-  const info = document.createElement('span');
-  info.textContent = `${file.name} · ${formatBytes(file.size)}`;
-  const cancel = document.createElement('button');
-  cancel.textContent = '取消';
-  cancel.onclick = clearSelectedFile;
-  const progress = document.createElement('progress');
-  progress.id = 'fileProgress';
-  progress.max = 100;
-  progress.value = 0;
-  progress.setAttribute('aria-label', '对方已接收的文件进度');
-  const detail = document.createElement('div');
-  detail.id = 'fileProgressDetail';
-  detail.className = 'file-progress-detail';
-  detail.textContent = '等待发送';
-  filePreview.append(info, cancel, progress, detail);
-  sendBtn.textContent = '发送文件';
+  const files = [...fileInput.files];
+  fileInput.value = '';
+  addFiles(files.map(file => ({ file, relativePath: '', folder: '' })));
 });
 
-function clearSelectedFile() {
-  if (transferController) { transferController.abort(); statusText.textContent = '正在取消…'; return; }
-  selectedFile = null;
-  fileInput.value = '';
-  filePreview.classList.add('hidden');
-  filePreview.innerHTML = '';
-  sendBtn.textContent = '发送';
+folderInput.addEventListener('change', () => {
+  const files = [...folderInput.files];
+  folderInput.value = '';
+  addFiles(files.map(file => {
+    const relativePath = String(file.webkitRelativePath || file.name).replace(/\\/g, '/');
+    const slash = relativePath.indexOf('/');
+    return { file, relativePath, folder: slash > 0 ? relativePath.slice(0, slash) : '' };
+  }));
+});
+
+clearFilesBtn.addEventListener('click', clearSelectedFiles);
+
+function addFiles(items) {
+  if (transferController) { showSystem('正在传输文件，请等待完成后再添加'); return; }
+  const folderTotals = new Map();
+  for (const item of items) {
+    if (item.folder) folderTotals.set(item.folder, (folderTotals.get(item.folder) || 0) + item.file.size);
+  }
+  const oversizedFolders = new Set(
+    [...folderTotals].filter(([, total]) => total > transport.limit).map(([folder]) => folder));
+  const accepted = [];
+  const skipped = [];
+  const reportedFolders = new Set();
+  for (const item of items) {
+    if (ignoredFileNames.has(item.file.name)) continue;
+    const label = item.relativePath || item.file.name;
+    if (oversizedFolders.has(item.folder)) {
+      if (!reportedFolders.has(item.folder)) {
+        reportedFolders.add(item.folder);
+        skipped.push(`${item.folder}/`);
+      }
+      continue;
+    }
+    if (item.file.size > transport.limit) {
+      skipped.push(label);
+      continue;
+    }
+    accepted.push(item);
+  }
+  if (accepted.length) selectedFiles.push(...accepted);
+  renderFilePreview();
+  if (skipped.length) showSystem(`已跳过超过 ${formatBytes(transport.limit)} 的项目：${skipped.join('、')}`);
 }
 
-async function sendSelectedFile() {
-  if (!selectedFile || !peerConnected || transferController) return;
-  const file = selectedFile;
+function renderFilePreview() {
+  filePreviewList.replaceChildren();
+  if (!selectedFiles.length) {
+    filePreview.classList.add('hidden');
+    filePreview.classList.remove('sending');
+    $('fileProgress').value = 0;
+    $('fileProgressDetail').textContent = '等待发送';
+    sendBtn.textContent = '发送';
+    return;
+  }
+  filePreview.classList.remove('hidden');
+  const folders = new Set(selectedFiles.map(item => item.folder).filter(Boolean));
+  const totalBytes = selectedFiles.reduce((sum, item) => sum + item.file.size, 0);
+  const counts = [`${selectedFiles.length} 个文件`];
+  if (folders.size) counts.push(`${folders.size} 个文件夹`);
+  filePreviewSummary.textContent = `${counts.join(' · ')} · 共 ${formatBytes(totalBytes)}`;
+  for (const item of selectedFiles) {
+    const label = item.relativePath || item.file.name;
+    const row = document.createElement('li');
+    const name = document.createElement('span');
+    name.className = 'preview-name';
+    name.textContent = label;
+    name.title = label;
+    const size = document.createElement('span');
+    size.className = 'preview-size';
+    size.textContent = formatBytes(item.file.size);
+    const remove = document.createElement('button');
+    remove.type = 'button';
+    remove.className = 'preview-remove';
+    remove.textContent = '×';
+    remove.setAttribute('aria-label', `移除 ${label}`);
+    remove.addEventListener('click', () => {
+      if (transferController) return;
+      selectedFiles = selectedFiles.filter(entry => entry !== item);
+      renderFilePreview();
+    });
+    row.append(name, size, remove);
+    filePreviewList.appendChild(row);
+  }
+  const sending = Boolean(transferController);
+  filePreview.classList.toggle('sending', sending);
+  clearFilesBtn.disabled = sending;
+  sendBtn.textContent = selectedFiles.length > 1 ? `发送 ${selectedFiles.length} 个文件` : '发送文件';
+}
+
+function clearSelectedFiles() {
+  if (transferController) { transferController.abort(); statusText.textContent = '正在取消…'; return; }
+  selectedFiles = [];
+  fileInput.value = '';
+  folderInput.value = '';
+  renderFilePreview();
+}
+
+function jobBytes(job) {
+  return job.kind === 'zip'
+    ? job.entries.reduce((sum, entry) => sum + entry.file.size, 0)
+    : job.file.size;
+}
+
+// 散装文件逐个发送；文件夹合并为一个 ZIP，接收方解压后保留目录结构。
+function planTransferJobs(items) {
+  const jobs = [];
+  const folders = new Map();
+  for (const item of items) {
+    if (!item.folder) {
+      jobs.push({ kind: 'file', name: item.file.name, file: item.file, items: [item] });
+      continue;
+    }
+    let group = folders.get(item.folder);
+    if (!group) {
+      group = { entries: [], items: [] };
+      folders.set(item.folder, group);
+      jobs.push({ kind: 'zip', name: `${item.folder}.zip`, entries: group.entries, items: group.items });
+    }
+    const path = (item.relativePath || item.file.name).replace(/\\/g, '/');
+    if (path.split('/').includes('..')) continue;
+    group.entries.push({ path, file: item.file });
+    group.items.push(item);
+  }
+  return jobs.filter(job => job.kind === 'file' || job.entries.length);
+}
+
+async function sendSelectedFiles() {
+  if (!selectedFiles.length || !peerConnected || transferController) return;
+  const jobs = planTransferJobs(selectedFiles);
+  if (!jobs.length) return;
   const controller = transferController = new AbortController();
   sendBtn.disabled = true;
   fileInput.disabled = true;
-  statusText.textContent = '正在发送，等待对方确认…';
-  let completed = false;
+  folderInput.disabled = true;
+  filePreview.classList.add('sending');
+  clearFilesBtn.disabled = true;
+  $('fileProgress').value = 0;
+  $('fileProgressDetail').textContent = '等待发送';
+  const totalBytes = jobs.reduce((sum, job) => sum + jobBytes(job), 0) || 1;
+  const batchStarted = performance.now();
+  let sentBytes = 0;
+  let finished = false;
   try {
-    await transport.send(file, (bytes, started, route) => {
-      const percent = bytes / file.size * 100;
-      const speed = bytes / Math.max((performance.now() - started) / 1000, 0.01);
-      $('fileProgress').value = percent;
-      $('fileProgressDetail').textContent = `${route} · ${percent.toFixed(1)}% · ${formatBytes(bytes)} / ${formatBytes(file.size)} · ${formatBytes(speed)}/s`;
-    }, controller.signal);
-    addFileMessage({ name: file.name, size: file.size, sentAt: Date.now() }, true);
-    statusText.textContent = '传输完成，对方已收到文件';
-    completed = true;
+    for (let index = 0; index < jobs.length; index += 1) {
+      const job = jobs[index];
+      let payload = job.file;
+      if (job.kind === 'zip') {
+        statusText.textContent = `正在打包 ${job.name}…`;
+        const blob = await window.ZipArchive.build(job.entries, (done, total) => {
+          statusText.textContent = `正在打包 ${job.name} · ${Math.floor(done / total * 100)}%`;
+        });
+        if (controller.signal.aborted) throw new Error('已取消传输');
+        payload = wrapZipPayload(blob, job.name);
+      }
+      statusText.textContent = `正在发送 ${index + 1}/${jobs.length}：${job.name}`;
+      await transport.send(payload, (bytes, started, route) => {
+        const overall = sentBytes + bytes;
+        const elapsed = Math.max((performance.now() - batchStarted) / 1000, 0.01);
+        $('fileProgress').value = overall / totalBytes * 100;
+        $('fileProgressDetail').textContent = `${route} · ${index + 1}/${jobs.length} · ${(overall / totalBytes * 100).toFixed(1)}% · ${formatBytes(overall)} / ${formatBytes(totalBytes)} · ${formatBytes(overall / elapsed)}/s`;
+      }, controller.signal);
+      addFileMessage({ name: job.name, size: payload.size, sentAt: Date.now() }, true);
+      sentBytes += payload.size;
+      selectedFiles = selectedFiles.filter(item => !job.items.includes(item));
+      renderFilePreview();
+    }
+    finished = true;
+    statusText.textContent = jobs.length > 1 ? '传输完成，对方已收到全部文件' : '传输完成，对方已收到文件';
   } catch (error) {
     statusText.textContent = error.message || '传输失败，请重试';
   } finally {
     transferController = null;
     fileInput.disabled = false;
+    folderInput.disabled = false;
     sendBtn.disabled = !peerConnected;
-    if (completed || controller.signal.aborted) clearSelectedFile();
+    clearFilesBtn.disabled = false;
+    filePreview.classList.remove('sending');
+    if (finished || controller.signal.aborted) clearSelectedFiles();
+    else renderFilePreview();
   }
 }
+
+function wrapZipPayload(blob, name) {
+  try {
+    return new File([blob], name, { type: 'application/zip' });
+  } catch {
+    // 个别环境没有 File 构造器；Blob 直接补上名字属性。
+    blob.name = name;
+    return blob;
+  }
+}
+
+// 拖拽文件 / 文件夹到聊天窗口加入发送队列；拖入纯文字则填入输入框。
+let dragDepth = 0;
+const dragHasFiles = event => [...(event.dataTransfer?.types || [])].includes('Files');
+
+function collectDropRoots(dataTransfer) {
+  const roots = [];
+  const items = dataTransfer?.items;
+  if (items?.length) {
+    for (const item of items) {
+      if (item.kind !== 'file') continue;
+      const entry = item.webkitGetAsEntry?.();
+      if (entry) roots.push(entry);
+      else {
+        const file = item.getAsFile();
+        if (file) roots.push(file);
+      }
+    }
+  } else if (dataTransfer?.files?.length) {
+    roots.push(...dataTransfer.files);
+  }
+  return roots;
+}
+
+function readEntryFile(entry) {
+  return new Promise(resolve => entry.file(file => resolve(file), () => resolve(null)));
+}
+
+// readEntries 每次最多返回 100 项，必须循环调用直到返回空数组。
+function readEntryDirectory(entry) {
+  return new Promise(resolve => {
+    const reader = entry.createReader();
+    const all = [];
+    const step = () => reader.readEntries(batch => {
+      if (batch.length) { all.push(...batch); step(); }
+      else resolve(all);
+    }, () => resolve(all));
+    step();
+  });
+}
+
+async function walkEntry(entry, parent, folderRoot, out) {
+  if (entry.isFile) {
+    if (ignoredFileNames.has(entry.name)) return;
+    const file = await readEntryFile(entry);
+    if (file) out.push({ file, relativePath: parent ? `${parent}/${entry.name}` : '', folder: folderRoot });
+    return;
+  }
+  if (!entry.isDirectory) return;
+  const path = parent ? `${parent}/${entry.name}` : entry.name;
+  for (const child of await readEntryDirectory(entry)) {
+    await walkEntry(child, path, folderRoot || entry.name, out);
+  }
+}
+
+async function collectFromDrop(dataTransfer) {
+  const out = [];
+  for (const root of collectDropRoots(dataTransfer)) {
+    if (root.isFile || root.isDirectory) await walkEntry(root, '', '', out);
+    else out.push({ file: root, relativePath: '', folder: '' });
+  }
+  return out;
+}
+
+async function handleFileDrop(dataTransfer) {
+  const collected = await collectFromDrop(dataTransfer);
+  if (collected.length) addFiles(collected);
+  else showSystem('拖入的内容中没有可发送的文件');
+}
+
+chatView.addEventListener('dragenter', (event) => {
+  if (!dragHasFiles(event)) return;
+  event.preventDefault();
+  dragDepth += 1;
+  chatView.classList.add('drag-over');
+});
+chatView.addEventListener('dragover', (event) => {
+  if (!dragHasFiles(event)) return;
+  event.preventDefault();
+  event.dataTransfer.dropEffect = 'copy';
+});
+chatView.addEventListener('dragleave', () => {
+  dragDepth = Math.max(0, dragDepth - 1);
+  if (!dragDepth) chatView.classList.remove('drag-over');
+});
+chatView.addEventListener('drop', (event) => {
+  event.preventDefault();
+  dragDepth = 0;
+  chatView.classList.remove('drag-over');
+  if (dragHasFiles(event)) {
+    void handleFileDrop(event.dataTransfer);
+    return;
+  }
+  const text = event.dataTransfer?.getData('text/plain');
+  if (text) {
+    textInput.value = textInput.value
+      ? `${textInput.value}\n${text}`.slice(0, 10000)
+      : text.slice(0, 10000);
+    textInput.dispatchEvent(new Event('input'));
+    textInput.focus({ preventScroll: true });
+  }
+});
+
+// 拖到窗口其他位置时不让浏览器直接打开或下载文件。
+window.addEventListener('dragover', event => event.preventDefault());
+window.addEventListener('drop', event => event.preventDefault());
 
 leaveBtn.addEventListener('click', () => {
   forgetRoom();

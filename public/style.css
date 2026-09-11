@@ -93,6 +93,7 @@ h1 { margin: 0; font-size: 27px; letter-spacing: -.5px; }
 .tip { color: #8a8a8f; font-size: 13px; text-align: center; margin: 18px 0 0; line-height: 1.5; }
 
 .chat-card {
+  position: relative;
   height: min(760px, calc(100dvh - 56px));
   max-height: 900px;
   display: grid;
@@ -256,14 +257,42 @@ textarea:focus { border-color: #07c160; }
   border-radius: 12px;
   padding: 9px 11px;
   font-size: 13px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 2px 10px;
   min-width: 0;
 }
-.file-preview span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.file-preview button { flex: 0 0 auto; min-width: 44px; min-height: 36px; border: 0; background: transparent; color: #d00; }
+.preview-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; grid-column: 1 / -1; min-width: 0; }
+#filePreviewSummary { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; color: #3a3a3c; }
+.preview-clear { flex: 0 0 auto; min-width: 44px; min-height: 36px; border: 0; background: transparent; color: #d00; }
+.preview-list {
+  grid-column: 1 / -1;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 2px;
+  max-height: 132px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.preview-list li { display: flex; align-items: center; gap: 8px; min-width: 0; padding: 4px 2px; }
+.preview-list li + li { border-top: 1px solid rgba(0,0,0,.05); }
+.preview-name { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.preview-size { flex: 0 0 auto; color: #8e8e93; font-size: 11px; }
+.preview-remove {
+  flex: 0 0 auto;
+  width: 44px;
+  height: 32px;
+  margin-right: -6px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: #d00;
+  font-size: 18px;
+  line-height: 1;
+}
+.preview-remove:disabled, .file-preview.sending .preview-remove { opacity: .35; cursor: default; }
 .status-text { min-height: 16px; margin-top: 7px; font-size: 11px; color: #8e8e93; text-align: center; }
 
 .logout-btn {
@@ -410,6 +439,27 @@ textarea:focus { border-color: #07c160; }
 .file-preview progress::-moz-progress-bar { background: #07c160; }
 .file-progress-detail { grid-column: 1 / -1; font-size: 12px; color: #68756d; overflow-wrap: anywhere; }
 #receiveProgress { overflow-wrap: anywhere; }
+
+.file-btn svg { display: block; width: 22px; height: 22px; }
+
+/* 拖拽文件 / 文件夹悬停在聊天窗口时的提示遮罩 */
+.chat-card.drag-over::after {
+  content: '松开，把文件或文件夹加入发送队列';
+  position: absolute;
+  inset: 0;
+  z-index: 9;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(255,255,255,.78);
+  border: 2px dashed #07c160;
+  border-radius: inherit;
+  color: #067a3e;
+  font-weight: 650;
+  font-size: 15px;
+  text-align: center;
+  pointer-events: none;
+}
 
 /* Only chat is viewport-locked. Pairing/login pages retain normal scrolling. */
 @media (max-width: 640px), (max-width: 900px) and (orientation: landscape) and (max-height: 520px) {

@@ -1,4 +1,5 @@
 const path = require('path');
+const os = require('os');
 const http = require('http');
 const crypto = require('crypto');
 const express = require('express');
@@ -7,10 +8,23 @@ const proxyaddr = require('proxy-addr');
 const { networkKey, deviceLabel } = require('./discovery');
 const trustProxy = proxyaddr.compile(process.env.TRUST_PROXY || 'loopback');
 
-const PORT = Number(process.env.PORT || 5000);
-const MAX_FILE_SIZE = Number(process.env.MAX_FILE_SIZE || 20 * 1024 * 1024);
+const PORT = Number(process.env.PORT || 5001);
+const HOST = process.env.HOST || '0.0.0.0';
+const MAX_FILE_SIZE = Number(process.env.MAX_FILE_SIZE || 1024 * 1024 * 1024);
 const ROOM_TTL_MS = Number(process.env.ROOM_TTL_MS || 30 * 60 * 1000);
 const SESSION_TTL_MS = Number(process.env.SESSION_TTL_MS || 24 * 60 * 60 * 1000);
+
+function getAccessHosts() {
+  if (HOST !== '0.0.0.0' && HOST !== '::') return [HOST];
+
+  const hosts = ['localhost'];
+  for (const addresses of Object.values(os.networkInterfaces())) {
+    for (const address of addresses || []) {
+      if (address.family === 'IPv4' && !address.internal) hosts.push(address.address);
+    }
+  }
+  return [...new Set(hosts)];
+}
 
 const { LoginGuard } = require('./login-guard');
 const loginGuard = new LoginGuard(path.join(process.env.AUTH_STATE_DIR || path.join(__dirname, '.data'), 'login-attempts.json'));
@@ -252,7 +266,7 @@ io.on('connection', (socket) => {
     next();
   });
 
-  socket.on('resume-room', (payload, ack = () => {}) => {
+  socket.on('resume-room', (payload, ack = () => { }) => {
     const code = payload?.code;
     if (typeof code !== 'string' || socket.data.roomCode) return ack({ ok: false, error: '无法恢复会话' });
     cleanupRoom(code);
@@ -278,7 +292,7 @@ io.on('connection', (socket) => {
     if (!code || roomSize(code) !== 2 || JSON.stringify(payload || {}).length > 64000) return;
     socket.to(code).emit('rtc-signal', payload);
   });
-  socket.on('file-packet', (packet, ack = () => {}) => {
+  socket.on('file-packet', (packet, ack = () => { }) => {
     const code = socket.data.roomCode;
     if (!code || roomSize(code) !== 2) return ack({ error: '另一台设备尚未连接' });
     if (!packet || !['begin', 'data', 'end', 'cancel'].includes(packet.kind)) return ack({ error: '传输请求无效' });
@@ -289,11 +303,11 @@ io.on('connection', (socket) => {
     });
   });
 
-  socket.on('connect-nearby', (id, ack = () => {}) => {
+  socket.on('connect-nearby', (id, ack = () => { }) => {
     const peer = typeof id === 'string' ? io.sockets.sockets.get(id) : null;
     if (socket.data.roomCode || !peer || peer === socket || peer.data.roomCode ||
-        !getValidSession(peer.data.authToken) || !socket.data.networkKey ||
-        peer.data.networkKey !== socket.data.networkKey) {
+      !getValidSession(peer.data.authToken) || !socket.data.networkKey ||
+      peer.data.networkKey !== socket.data.networkKey) {
       return ack({ ok: false, error: '设备已离线、正在会话中或不在同一网络，请重新选择' });
     }
     const code = `nearby-${crypto.randomUUID()}`;
@@ -307,7 +321,7 @@ io.on('connection', (socket) => {
     publishDevices();
   });
 
-  socket.on('create-room', (ack = () => {}) => {
+  socket.on('create-room', (ack = () => { }) => {
     if (socket.data.roomCode) {
       ack({ ok: false, error: '你已经在一个会话中' });
       return;
@@ -324,7 +338,7 @@ io.on('connection', (socket) => {
     publishDevices();
   });
 
-  socket.on('join-room', (rawCode, ack = () => {}) => {
+  socket.on('join-room', (rawCode, ack = () => { }) => {
     if (socket.data.roomCode) return ack({ ok: false, error: '你已经在一个会话中' });
     const code = String(rawCode || '').trim();
     cleanupRoom(code);
@@ -355,7 +369,7 @@ io.on('connection', (socket) => {
     socket.to(code).emit('rtc-start', { initiator: false });
   });
 
-  socket.on('send-text', (payload, ack = () => {}) => {
+  socket.on('send-text', (payload, ack = () => { }) => {
     const code = socket.data.roomCode;
     const text = typeof payload?.text === 'string' ? payload.text.trim() : '';
     if (!code || !rooms.has(code)) return ack({ ok: false, error: '当前未配对' });
@@ -372,7 +386,7 @@ io.on('connection', (socket) => {
     ack({ ok: true, message });
   });
 
-  socket.on('send-file', (payload, ack = () => {}) => {
+  socket.on('send-file', (payload, ack = () => { }) => {
     const code = socket.data.roomCode;
     if (!code || !rooms.has(code)) return ack({ ok: false, error: '当前未配对' });
     if (roomSize(code) < 2) return ack({ ok: false, error: '另一台设备尚未连接' });
@@ -402,7 +416,7 @@ io.on('connection', (socket) => {
     ack({ ok: true, meta: { ...file, data: undefined } });
   });
 
-  socket.on('leave-room', (ack = () => {}) => {
+  socket.on('leave-room', (ack = () => { }) => {
     const code = socket.data.roomCode;
     if (!code) return;
     rooms.get(code)?.members.delete(socket.data.resumeToken);
@@ -449,8 +463,9 @@ setInterval(() => {
 
 }, 60_000).unref();
 
-server.listen(PORT, '0.0.0.0', () => {
-  console.log(`File Bridge running at http://0.0.0.0:${server.address().port}`);
+server.listen(PORT, HOST, () => {
+  const accessUrls = getAccessHosts().map((host) => `http://${host}:${server.address().port}`);
+  console.log(`File Bridge running at ${accessUrls.join(', ')}`);
   console.log(`Max file size: ${Math.floor(MAX_FILE_SIZE / 1024 / 1024)}MB`);
   console.log('图片验证码已启用：连续输错 3 次锁定 1 小时');
 });
