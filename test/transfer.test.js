@@ -37,7 +37,7 @@ test('backpressure waits for drain and responds to cancel / channel close', asyn
   await assert.rejects(disconnected, /断开/);
 });
 
-test('direct pipeline keeps at most four blocks awaiting acknowledgement and respects frame limit', async () => {
+test('direct pipeline bounds blocks in flight and respects the frame limit', async () => {
   const transport = create();
   const acknowledgements = [];
   let frames = 0;
@@ -61,9 +61,10 @@ test('direct pipeline keeps at most four blocks awaiting acknowledgement and res
   const sending = transport.sendDirect(new Blob([new Uint8Array(6 * 1024 * 1024)]), () => {}, new AbortController().signal)
     .then(() => { finished = true; });
   const deadline = Date.now() + 3000;
-  while (acknowledgements.length < 4 && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 5));
-  assert.equal(acknowledgements.length, 4);
-  assert.equal(sent, 4 * 64 * 1024);
+  while (acknowledgements.length < 16 && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 5));
+  assert.equal(acknowledgements.length, 16);
+  assert.equal(sent, 16 * 256 * 1024);
+  assert.equal(peak, 16);
   while (!finished && Date.now() < deadline) {
     acknowledgements.splice(0).forEach(resolve => resolve());
     await new Promise(resolve => setTimeout(resolve, 5));
@@ -72,7 +73,6 @@ test('direct pipeline keeps at most four blocks awaiting acknowledgement and res
   await sending;
   assert.equal(sent, 6 * 1024 * 1024);
   assert.equal(frames, 384);
-  assert.equal(peak, 4);
 });
 
 test('offer/answer and candidates flow both ways; mDNS candidates get a literal fallback', async () => {

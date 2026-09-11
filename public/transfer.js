@@ -115,7 +115,7 @@ class FileTransport {
   attach(dc) {
     this.dc = dc;
     dc.binaryType = 'arraybuffer';
-    dc.bufferedAmountLowThreshold = 256 * 1024;
+    dc.bufferedAmountLowThreshold = 1024 * 1024;
     dc.onopen = () => { clearTimeout(this.iceTimer); this.iceTimer = null; this.hooks.route('设备直传 · 不经过服务器'); };
     dc.onclose = () => { if (this.dc === dc) this.close(); };
     dc.onmessage = ({ data }) => {
@@ -222,14 +222,32 @@ class FileTransport {
       else if (dc.bufferedAmount <= dc.bufferedAmountLowThreshold) drained();
     });
   }
+  async sendFrame(dc, frame, signal, highWater) {
+    let retries = 0;
+    for (;;) {
+      if (signal.aborted) throw new Error('已取消传输');
+      if (dc.readyState !== 'open') throw new Error('直传连接已断开');
+      if (dc.bufferedAmount > highWater) { await this.waitForBuffer(dc, signal); continue; }
+      try { dc.send(frame); return; }
+      catch (error) {
+        // Some browsers throw once the SCTP send buffer is full; drain and retry.
+        if (error?.name === 'TypeError' || error?.name === 'InvalidStateError' || ++retries > 20) throw error;
+        await this.waitForBuffer(dc, signal);
+      }
+    }
+  }
   async sendDirect(file, report, signal) {
     const dc = this.dc;
-    const blockSize = 64 * 1024;
+    // 256 KiB blocks with a 16-block window keep ~4 MiB unacknowledged, which
+    // fills a fast link instead of stalling on every block's round trip.
+    const blockSize = 256 * 1024;
+    const windowBlocks = 16;
+    const bufferHighWater = 4 * 1024 * 1024;
     const maximum = this.pc?.sctp?.maxMessageSize;
     const frameSize = Math.min(16 * 1024, maximum > 0 ? maximum : 16 * 1024);
     const confirmations = [];
     let failure;
-    // At most two read blocks, bounded SCTP buffering and four unconfirmed 64 KiB blocks.
+    // At most two read blocks, bounded SCTP buffering and a window of unconfirmed blocks.
     const read = offset => file.slice(offset, offset + blockSize).arrayBuffer()
       .then(data => ({ data }), error => ({ error }));
     let nextRead = read(0);
@@ -243,15 +261,15 @@ class FileTransport {
         nextRead = offset + blockSize < file.size ? read(offset + blockSize) : null;
         for (let pos = 0; pos < data.byteLength; pos += frameSize) {
           if (signal.aborted) throw new Error('已取消传输');
-          if (dc.readyState !== 'open' || dc.bufferedAmount > 1024 * 1024) await this.waitForBuffer(dc, signal);
           if (failure) throw failure;
-          // Keep frames small for browser SCTP interoperability.
-          dc.send(data.slice(pos, pos + frameSize));
+          // Keep frames small for browser SCTP interoperability; the send buffer
+          // provides backpressure so the pipe stays full without blocking per block.
+          await this.sendFrame(dc, data.slice(pos, pos + frameSize), signal, bufferHighWater);
         }
         // Pipeline receiver confirmations instead of stopping after every block.
         confirmations.push(this.request({ kind: 'block' }, true)
           .then(result => report(result.bytes), error => { failure = error; }));
-        if (confirmations.length >= 4) await confirmations.shift();
+        if (confirmations.length >= windowBlocks) await confirmations.shift();
       }
       await Promise.all(confirmations);
       if (failure) throw failure;
@@ -292,13 +310,22 @@ class FileTransport {
       begun = true;
       if (direct) await this.sendDirect(file, report, signal);
       else {
-        for (let offset = 0; offset < file.size; offset += 256 * 1024) {
+        // Pipeline relayed chunks instead of paying one round trip per chunk.
+        const chunkSize = 256 * 1024;
+        const relayWindow = 8;
+        const confirmations = [];
+        let failure;
+        for (let offset = 0; offset < file.size; offset += chunkSize) {
           if (signal.aborted) throw new Error('已取消传输');
-          const data = await file.slice(offset, offset + 256 * 1024).arrayBuffer();
+          if (failure) throw failure;
+          const data = await file.slice(offset, offset + chunkSize).arrayBuffer();
           if (signal.aborted) throw new Error('已取消传输');
-          const result = await this.request({ kind: 'data', data }, false);
-          report(result.bytes);
+          confirmations.push(this.request({ kind: 'data', data }, false)
+            .then(result => report(result.bytes), error => { failure = error; }));
+          if (confirmations.length >= relayWindow) await confirmations.shift();
         }
+        await Promise.all(confirmations);
+        if (failure) throw failure;
       }
       if (signal.aborted) throw new Error('已取消传输');
       await this.request({ kind: 'end' }, direct);
